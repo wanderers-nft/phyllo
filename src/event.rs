@@ -1,19 +1,21 @@
+use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum Event<T> {
+    Hearbeat,
     ChannelEvent(ChannelEvent),
     Event(T),
 }
 
 impl<T> Display for Event<T>
 where
-    T: Display,
+    T: ToString,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match &self {
+            Event::Hearbeat => "heartbeat".to_string(),
             Event::ChannelEvent(ce) => ce.to_string(),
             Event::Event(e) => e.to_string(),
         };

@@ -13,3 +13,6 @@ tokio-tungstenite = "0.17"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 url = "2.2.2"
 tracing = "0.1.34"
+thiserror = "1.0.31"
+tokio-stream = "0.1.8"
+backoff = {version = "0.4.0", features = ["tokio"] }

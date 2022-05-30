@@ -1,4 +1,4 @@
 pub mod channel;
-pub mod event;
+pub mod error;
 pub mod message;
 pub mod socket;

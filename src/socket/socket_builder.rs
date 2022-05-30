@@ -1,25 +1,49 @@
-use futures_util::{SinkExt, StreamExt};
+use super::{Reference, SocketHandler};
+use crate::{
+    channel::{ChannelStatus, SocketChannelMessage},
+    message::{Message, TungsteniteMessageResult},
+};
+use backoff::ExponentialBackoff;
+use futures_util::{stream::SplitSink, SinkExt, StreamExt};
+use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    sync::{atomic::AtomicU64, Arc},
+    collections::HashMap,
+    hash::Hash,
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
-use tokio::{sync::Mutex, time};
+use tokio::{
+    net::TcpStream,
+    select,
+    sync::{
+        broadcast::{self, Receiver},
+        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        Mutex,
+    },
+    time,
+};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{self, protocol::WebSocketConfig},
+    MaybeTlsStream, WebSocketStream,
 };
-use tracing::{error, info};
 use url::Url;
 
-use crate::message::Message;
+type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>;
+// type Stream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
+type TungsteniteWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-use super::{InnerSocket, Socket};
+pub enum OnDisconnect {
+    Die,
+    Retry,
+}
 
+#[derive(Clone)]
 pub struct SocketBuilder {
     endpoint: Url,
     websocket_config: Option<WebSocketConfig>,
     heartbeat: Duration,
-    reconnect_after: Duration,
+    reconnect: ExponentialBackoff,
 }
 
 impl SocketBuilder {
@@ -28,7 +52,7 @@ impl SocketBuilder {
             endpoint,
             websocket_config: None,
             heartbeat: Duration::from_millis(30000),
-            reconnect_after: Duration::from_millis(5000),
+            reconnect: ExponentialBackoff::default(),
         }
     }
 
@@ -47,46 +71,278 @@ impl SocketBuilder {
         self.heartbeat = heartbeat;
     }
 
-    pub fn reconnect_after(&mut self, reconnect_after: Duration) {
-        self.reconnect_after = reconnect_after;
+    pub fn reconnect(&mut self, reconnect: ExponentialBackoff) {
+        self.reconnect = reconnect;
     }
 
-    pub async fn build(&self) -> Result<Socket, tungstenite::Error> {
-        let (sink, stream) =
-            connect_async_with_config(self.endpoint.clone(), self.websocket_config)
-                .await?
-                .0
-                .split();
+    pub async fn build<T>(&self) -> SocketHandler<T>
+    where
+        T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static,
+    {
+        // Send, receiver for client -> server
+        let (out_tx, out_rx) = unbounded_channel::<TungsteniteMessageResult>();
 
-        let socket = Socket {
-            inner: Arc::new(InnerSocket {
-                sink: Mutex::new(sink),
-                stream: Mutex::new(stream),
-                reference: AtomicU64::new(0),
-            }),
+        let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+        let (close_tx, _) = broadcast::channel(1);
+        let reference = Reference::new();
+
+        // Spawn task
+        let socket: Socket<T> = Socket {
+            out_rx,
+            subscriptions: subscriptions.clone(),
+            reference: reference.clone(),
+            endpoint: self.endpoint.clone(),
+            websocket_config: self.websocket_config,
+            heartbeat: self.heartbeat,
+            reconnect: self.reconnect.clone(),
+            close: close_tx.subscribe(),
         };
+        tokio::spawn(socket.run());
 
-        tokio::task::spawn(heartbeat_task(socket.clone(), self.heartbeat));
-
-        Ok(socket)
+        SocketHandler {
+            reference,
+            out_tx,
+            subscriptions,
+            close: close_tx,
+            is_closed: Arc::new(AtomicBool::new(false)),
+        }
     }
 }
 
-async fn heartbeat_task(socket: Socket, duration: Duration) {
-    let mut interval = time::interval(duration);
-    loop {
-        interval.tick().await;
-        let message = Message::<String, ()>::heartbeat().try_into().unwrap();
+struct Socket<T> {
+    out_rx: UnboundedReceiver<TungsteniteMessageResult>,
+    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage>>>>,
 
-        match socket.inner.sink.lock().await.send(message).await {
-            Ok(_) => {
-                info!("sent heartbeat");
-                continue;
-            }
-            Err(_) => {
-                error!("could not send heartbeat");
-                continue;
-            }
+    reference: Reference,
+    endpoint: Url,
+    websocket_config: Option<WebSocketConfig>,
+    heartbeat: Duration,
+    reconnect: ExponentialBackoff,
+    close: Receiver<()>,
+}
+
+impl<T> Socket<T>
+where
+    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static,
+{
+    async fn connect_with_backoff(&self) -> Result<TungsteniteWebSocketStream, tungstenite::Error> {
+        backoff::future::retry(self.reconnect.clone(), || async {
+            Ok(connect_async_with_config(self.endpoint.clone(), self.websocket_config).await?)
+        })
+        .await
+        .map(|(twss, _)| twss)
+    }
+
+    pub async fn run(mut self) -> Result<(), tungstenite::Error> {
+        let mut interval = {
+            let mut i = time::interval(self.heartbeat);
+            i.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            i
         };
+
+        'retry: loop {
+            // TODO: Lock all channels
+            {
+                let mut subscriptions = self.subscriptions.lock().await;
+                for (_, chan) in subscriptions.iter_mut() {
+                    let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Closed));
+                }
+            }
+
+            // Connect to socket
+            let (mut sink, mut stream) = self.connect_with_backoff().await.map(|ws| ws.split())?;
+
+            'conn: loop {
+                if let Err(tungstenite::Error::Io(_)) = select! {
+                    // Close signal
+                    _ = self.close.recv() => {
+                        let _ = sink.close().await;
+                        break 'retry;
+                    }
+
+                    // Heartbeat
+                    _ = interval.tick() => Socket::<T>::send_hearbeat(self.reference.next(), &mut sink).await,
+
+                    // Outbound message to be sent
+                    v = self.out_rx.recv() => Socket::<T>::on_outbound(&mut sink, v).await,
+
+                    // Inbound message to be relayed
+                    i = stream.next() => {
+                        // If the stream is closed we can never receive any more messages. Break
+                        if let Some(i) = i {
+                            self.on_inbound(i).await;
+                            Ok(())
+                        }
+                        else {
+                            break 'conn;
+                        }
+                    },
+                } {
+                    break 'conn;
+                };
+            }
+        }
+
+        // Send close signal to all subscriptions
+        let mut subscriptions = self.subscriptions.lock().await;
+        for (_, chan) in subscriptions.iter_mut() {
+            let _ = chan.send(SocketChannelMessage::ChannelStatus(
+                ChannelStatus::SocketClosed,
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn send_hearbeat(reference: u64, sink: &mut Sink) -> Result<(), tungstenite::Error> {
+        let heartbeat_message: tungstenite::Message =
+            Message::<String, (), (), ()>::heartbeat(reference)
+                .try_into()
+                .unwrap();
+
+        sink.feed(heartbeat_message).await
+    }
+
+    async fn on_outbound(
+        sink: &mut Sink,
+        message: Option<TungsteniteMessageResult>,
+    ) -> Result<(), tungstenite::Error> {
+        // Check if channel is closed
+        if let Some(message_res) = message {
+            let _ = message_res
+                .callback
+                .send(sink.feed(message_res.message).await);
+        }
+        Ok(())
+    }
+
+    async fn on_inbound(&mut self, message: Result<tungstenite::Message, tungstenite::Error>) {
+        if let Ok(tungstenite::Message::Text(t)) = message {
+            let _ = self.decode_and_relay(t);
+        }
+    }
+
+    async fn decode_and_relay(&mut self, text: String) -> Result<(), serde_json::Error> {
+        use serde_json::Value;
+
+        // To determine which topic we should relay the raw tungstenite mesage to, we "ignore" V, P but deserialise for T.
+        let message = serde_json::from_str::<Message<T, Value, Value, Value>>(&text)?;
+
+        let subscriptions = self.subscriptions.lock().await;
+        if let Some(chan) = subscriptions.get(&message.topic) {
+            // TODO: handle this error
+            let _ = chan.send(SocketChannelMessage::Message(tungstenite::Message::Text(
+                text,
+            )));
+        }
+        Ok(())
     }
 }
+
+// struct Outbound {
+//     sink: Sink,
+//     out_rx: Arc<Mutex<UnboundedReceiver<TungsteniteMessageResult>>>,
+//     heartbeat: Duration,
+// }
+
+// impl Outbound {
+//     // async fn send_hearbeat(sink: &mut Sink) -> Result<(), tungstenite::Error> {
+//     //     let heartbeat_message: tungstenite::Message = Message::<String, (), String>::heartbeat()
+//     //         .try_into()
+//     //         .unwrap();
+
+//     //     sink.feed(heartbeat_message).await
+//     // }
+
+//     // async fn on_external_message(
+//     //     sink: &mut Sink,
+//     //     message_res: Option<TungsteniteMessageResult>,
+//     // ) -> Result<(), tungstenite::Error> {
+//     //     // Check if channel is closed
+//     //     if let Some(message_res) = message_res {
+//     //         let _ = message_res
+//     //             .callback
+//     //             .send(sink.feed(message_res.message).await);
+//     //     }
+//     //     // If channel is closed
+//     //     else {
+//     //         sink.close().await?;
+//     //     }
+//     //     Ok(())
+//     // }
+
+//     async fn run(mut self) {
+//         // Acquiring the mutex guard here is fine, because the receiver should never be acquired by two tasks anyways.
+//         let mut out_rx = self.out_rx.lock().await;
+
+//         let mut interval = {
+//             let mut i = time::interval(self.heartbeat);
+//             i.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+//             i
+//         };
+
+//         loop {
+//             let res = select! {
+//                 // Heartbeat
+//                 _ = interval.tick() => Outbound::send_hearbeat(&mut self.sink).await,
+
+//                 // Message to send out?
+//                 v = out_rx.recv() => Outbound::on_external_message(&mut self.sink, v).await,
+//             };
+
+//             if let Err(e) = res {
+//                 match e {
+//                     tungstenite::Error::ConnectionClosed => {
+//                         return;
+//                     }
+//                     _ => {}
+//                 }
+//             }
+//         }
+//     }
+// }
+
+// struct Inbound<T> {
+//     stream: Stream,
+//     subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<tungstenite::Message>>>>,
+// }
+
+// impl<T> Inbound<T>
+// where
+//     T: DeserializeOwned + Eq + Hash,
+// {
+//     async fn decode_and_relay(&mut self, text: String) -> Result<(), serde_json::Error> {
+//         use serde_json::Value;
+
+//         // To determine which topic we should relay the raw tungstenite mesage to, we "ignore" V, P but deserialise for T.
+//         let message = serde_json::from_str::<Message<Value, Value, T>>(&text)?;
+
+//         let subscriptions = self.subscriptions.lock().await;
+//         if let Some(ch) = subscriptions.get(&message.topic) {
+//             // TODO: handle this error
+//             let _ = ch.send(tungstenite::Message::Text(text));
+//         }
+//         Ok(())
+//     }
+
+//     async fn run(mut self) {
+//         while let Some(msg) = self.stream.next().await {
+//             let msg = match msg {
+//                 Ok(msg) => msg,
+//                 Err(_) => continue,
+//             };
+
+//             match msg {
+//                 tungstenite::Message::Text(t) => {
+//                     let _ = self.decode_and_relay(t).await;
+//                 }
+//                 // Server is closing the socket. Tungstenite will handle closing the Sink.
+//                 // TODO: Depending on config, either kill or reconnect
+//                 tungstenite::Message::Close(_) => {
+//                     return;
+//                 }
+//                 _ => {}
+//             }
+//         }
+//     }
+// }

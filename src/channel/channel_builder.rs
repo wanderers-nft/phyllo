@@ -1,5 +1,6 @@
 use backoff::ExponentialBackoff;
 use serde::{de::DeserializeOwned, Serialize};
+use serde_json::json;
 use std::{
     collections::{hash_map::Entry, HashMap},
     sync::Arc,
@@ -18,7 +19,7 @@ use tokio_tungstenite::tungstenite;
 use crate::{
     error::Error,
     message::{
-        event::{ChannelEvent, Event},
+        event::{Event, ProtocolEvent},
         EventPayloadResult, Message, MessageResult, Payload, TungsteniteMessageResult,
     },
     socket::Reference,
@@ -31,7 +32,7 @@ pub struct ChannelBuilder<T> {
     pub(crate) topic: T,
     timeout: Duration,
     rejoin: ExponentialBackoff,
-    params: serde_json::Value,
+    params: Option<serde_json::Value>,
     broadcast_buffer: usize,
 }
 
@@ -44,7 +45,7 @@ where
             topic,
             timeout: Duration::from_millis(20000),
             rejoin: ExponentialBackoff::default(),
-            params: serde_json::Value::Null,
+            params: None,
             broadcast_buffer: 128,
         }
     }
@@ -61,7 +62,7 @@ where
         self.rejoin = rejoin_after;
     }
 
-    pub fn params<U>(&mut self, params: U)
+    pub fn params<U>(&mut self, params: Option<U>)
     where
         U: Serialize,
     {
@@ -69,11 +70,11 @@ where
             .expect("could not serialize parameter");
     }
 
-    pub fn try_params<U>(&mut self, params: U) -> Result<(), serde_json::Error>
+    pub fn try_params<U>(&mut self, params: Option<U>) -> Result<(), serde_json::Error>
     where
         U: Serialize,
     {
-        self.params = serde_json::to_value(params)?;
+        self.params = params.map(|v| serde_json::to_value(&v)).transpose()?;
         Ok(())
     }
 
@@ -131,7 +132,7 @@ struct Channel<T, V, P, R> {
 
     topic: T,
     rejoin_after: ExponentialBackoff,
-    params: serde_json::Value,
+    params: Option<serde_json::Value>,
 
     replies: RepliesMapping<T, V, P, R>,
     reference: Reference,
@@ -165,22 +166,22 @@ where
     async fn inbound(&mut self, message: SocketChannelMessage) -> Result<(), serde_json::Error> {
         match message {
             SocketChannelMessage::Message(msg) => {
+                // println!("Channel: {:?}", &msg);
                 let msg: Message<T, V, P, R> = msg.try_into()?;
 
                 match (&msg.event, &msg.payload) {
                     // On message reply, trigger callback
                     (
-                        Event::ChannelEvent(ChannelEvent::Reply),
-                        Payload::PushReply {
-                            status: _,
-                            response: _,
-                        },
+                        Event::Protocol(ProtocolEvent::Reply),
+                        Some(Payload::PushReply { status, response }),
                     ) => {
-                        self.send_reply(msg.reference, Ok(msg));
+                        if let Some(message_ref) = msg.reference {
+                            self.send_reply(message_ref, Ok(msg));
+                        }
                     }
 
                     // On new message
-                    (Event::Event(_), Payload::Custom(_)) => {
+                    (Event::Event(_), Some(Payload::Custom(_))) => {
                         // TODO: Handle this error
                         let _ = self.broadcast.send(msg);
                     }
@@ -207,7 +208,13 @@ where
         let reference = self.reference.next();
 
         let message = MessageResult {
-            message: Message::new(self.join_ref, reference, self.topic.clone(), event, payload),
+            message: Message::new(
+                self.join_ref,
+                reference,
+                self.topic.clone(),
+                event,
+                Some(payload),
+            ),
             callback,
         };
 
@@ -283,7 +290,7 @@ struct Rejoin<T> {
 struct RejoinInner<T> {
     join_ref: u64,
     topic: T,
-    params: serde_json::Value,
+    params: Option<serde_json::Value>,
     out_tx: UnboundedSender<TungsteniteMessageResult>,
 }
 
@@ -291,19 +298,18 @@ impl<T> Rejoin<T>
 where
     T: Clone + Send,
 {
-    async fn join<V, R>(&self) -> Result<u64, Error>
+    async fn join<V, P>(&self) -> Result<u64, Error>
     where
         T: Serialize + Clone + Send,
         V: Serialize,
-        R: Serialize,
+        P: Serialize,
     {
         let i = self.inner.lock().await;
         let join_ref = i.join_ref;
-        let message: tungstenite::Message = Message::<T, V, serde_json::Value, R>::join(
-            i.join_ref,
+        let message: tungstenite::Message = Message::<T, V, P, serde_json::Value>::join(
             i.join_ref,
             i.topic.clone(),
-            Payload::Custom(i.params.clone()),
+            i.params.clone(),
         )
         .try_into()?;
         let (message, rx) = TungsteniteMessageResult::new(message);

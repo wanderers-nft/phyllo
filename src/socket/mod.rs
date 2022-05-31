@@ -4,6 +4,7 @@ use crate::channel::{ChannelHandler, SocketChannelMessage};
 use crate::message::TungsteniteMessageResult;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::atomic::AtomicBool;
 use std::{
@@ -33,7 +34,7 @@ pub struct SocketHandler<T> {
 
 impl<T> SocketHandler<T>
 where
-    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static,
+    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
 {
     pub async fn new(endpoint: Url) -> Self {
         Self::builder(endpoint).build().await
@@ -46,31 +47,6 @@ where
     pub fn next_ref(&self) -> u64 {
         self.reference.next()
     }
-
-    // async fn run_join_channel_task(
-    //     self,
-    //     channel_builder: ChannelBuilder<T>,
-    //     in_rx: UnboundedReceiver<SocketChannelMessage>,
-    // ) -> Result<UnboundedReceiver<SocketChannelMessage>, Error> {
-    //     let (t, r) = oneshot::channel::<Result<(), tungstenite::Error>>();
-    //     let join_message = TungsteniteMessageResult {
-    //         message: Message::<(), serde_json::Value, T>::join(
-    //             channel_builder.join_ref,
-    //             self.next_ref(),
-    //             channel_builder.topic,
-    //             channel_builder.params,
-    //         )
-    //         .try_into()?,
-    //         callback: t,
-    //     };
-
-    //     // TODO: Use backoff
-    //     let _ = self.out_tx.send(join_message);
-    //     r.await.unwrap()?;
-
-    //     // Remember to give the Covenant back their receiver
-    //     Ok(in_rx)
-    // }
 
     pub async fn channel<V, P, R>(
         &mut self,

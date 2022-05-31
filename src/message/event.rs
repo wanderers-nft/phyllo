@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Event<T> {
-    Hearbeat,
-    ChannelEvent(ChannelEvent),
+    Protocol(ProtocolEvent),
     Event(T),
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-pub enum ChannelEvent {
+pub enum ProtocolEvent {
+    #[serde(rename = "heartbeat")]
+    Heartbeat,
     #[serde(rename = "phx_close")]
     Close,
     #[serde(rename = "phx_error")]

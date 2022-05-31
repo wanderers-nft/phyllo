@@ -2,24 +2,24 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite;
 
-use self::event::{ChannelEvent, Event};
+use self::event::{Event, ProtocolEvent};
 
 pub mod event;
 
 #[derive(Debug, Clone)]
 pub struct Message<T, V, P, R> {
-    pub(crate) join_ref: u64,
-    pub(crate) reference: u64,
+    pub(crate) join_ref: Option<u64>,
+    pub(crate) reference: Option<u64>,
     pub(crate) topic: T,
     pub(crate) event: Event<V>,
-    pub(crate) payload: Payload<P, R>,
+    pub(crate) payload: Option<Payload<P, R>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Payload<P, R> {
-    PushReply { status: PushStatus, response: R },
-    Custom(P),
+    PushReply { status: PushStatus, response: P },
+    Custom(R),
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,14 +29,14 @@ pub enum PushStatus {
     Error,
 }
 
-impl<V, R> Message<String, V, (), R> {
+impl Message<String, (), (), ()> {
     pub fn heartbeat(reference: u64) -> Self {
         Self {
-            join_ref: 0,
-            reference,
+            join_ref: Some(0),
+            reference: Some(reference),
             topic: "phoenix".to_string(),
-            event: Event::Hearbeat,
-            payload: Payload::Custom(()),
+            event: Event::Protocol(ProtocolEvent::Heartbeat),
+            payload: None,
         }
     }
 }
@@ -53,24 +53,24 @@ where
         reference: u64,
         topic: T,
         event: Event<V>,
-        payload: Payload<P, R>,
+        payload: Option<Payload<P, R>>,
     ) -> Self {
         Self {
-            join_ref,
-            reference,
+            join_ref: Some(join_ref),
+            reference: Some(reference),
             topic,
             event,
             payload,
         }
     }
 
-    pub fn join(join_ref: u64, reference: u64, topic: T, payload: Payload<P, R>) -> Self {
+    pub fn join(reference: u64, topic: T, payload: Option<R>) -> Self {
         Self::new(
-            join_ref,
+            0,
             reference,
             topic,
-            Event::ChannelEvent(ChannelEvent::Join),
-            payload,
+            Event::Protocol(ProtocolEvent::Join),
+            payload.map(|r| Payload::Custom(r)),
         )
     }
 }

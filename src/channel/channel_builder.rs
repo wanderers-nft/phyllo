@@ -168,10 +168,18 @@ where
                 let msg: Message<T, V, P, R> = msg.try_into()?;
 
                 match (&msg.event, &msg.payload) {
+                    // On error, mark channel has errored so the next iteration can attempt re-connect
+                    (Event::Protocol(ProtocolEvent::Error), _) => {
+                        self.status = ChannelStatus::Errored;
+                    }
+
                     // On message reply, trigger callback
                     (
                         Event::Protocol(ProtocolEvent::Reply),
-                        Some(Payload::PushReply { status, response }),
+                        Some(Payload::PushReply {
+                            status: _,
+                            response: _,
+                        }),
                     ) => {
                         if let Some(message_ref) = msg.reference {
                             self.send_reply(message_ref, Ok(msg));

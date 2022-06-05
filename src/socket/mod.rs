@@ -53,7 +53,7 @@ where
         channel_builder: ChannelBuilder<T>,
     ) -> ChannelHandler<T, V, P, R>
     where
-        T: Serialize + DeserializeOwned + Send + Clone + Eq + Hash,
+        T: Serialize + DeserializeOwned + Send + Sync + Clone + Eq + Hash,
         V: Serialize + DeserializeOwned + Send + Clone + 'static,
         P: Serialize + DeserializeOwned + Send + Clone + 'static,
         R: Serialize + DeserializeOwned + Send + Clone + 'static,

@@ -1,9 +1,7 @@
 use backoff::ExponentialBackoff;
 use serde::{de::DeserializeOwned, Serialize};
-use serde_json::json;
 use std::{
     collections::{hash_map::Entry, HashMap},
-    sync::Arc,
     time::Duration,
 };
 use tokio::{
@@ -11,7 +9,7 @@ use tokio::{
     sync::{
         broadcast,
         mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-        oneshot, Mutex,
+        oneshot,
     },
 };
 use tokio_tungstenite::tungstenite;
@@ -89,7 +87,7 @@ where
         in_rx: UnboundedReceiver<SocketChannelMessage>,
     ) -> ChannelHandler<T, V, P, R>
     where
-        T: Serialize + DeserializeOwned + Send + Clone + 'static,
+        T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static,
         V: Serialize + DeserializeOwned + Send + Clone + 'static,
         P: Serialize + DeserializeOwned + Send + Clone + 'static,
         R: Serialize + DeserializeOwned + Send + Clone + 'static,
@@ -247,12 +245,10 @@ where
             if self.status.should_rejoin() {
                 let rejoiner = Rejoin {
                     rejoin_after: self.rejoin_after.clone(),
-                    inner: Arc::new(Mutex::new(RejoinInner {
-                        join_ref: self.reference.next(),
-                        topic: self.topic.clone(),
-                        params: self.params.clone(),
-                        out_tx: self.out_tx.clone(),
-                    })),
+                    join_ref: self.reference.next(),
+                    topic: self.topic.clone(),
+                    params: self.params.clone(),
+                    out_tx: self.out_tx.clone(),
                 };
                 // todo: handle this error
                 self.join_ref = rejoiner.join_with_backoff::<V, R>().await.unwrap();
@@ -283,40 +279,30 @@ where
 #[derive(Clone, Debug)]
 struct Rejoin<T> {
     rejoin_after: ExponentialBackoff,
-    inner: Arc<Mutex<RejoinInner<T>>>,
-}
-
-#[derive(Debug)]
-struct RejoinInner<T> {
     join_ref: u64,
     topic: T,
     params: Option<serde_json::Value>,
     out_tx: UnboundedSender<TungsteniteMessageResult>,
 }
 
-impl<T> Rejoin<T>
-where
-    T: Clone + Send,
-{
+impl<T> Rejoin<T> {
     async fn join<V, P>(&self) -> Result<u64, Error>
     where
         T: Serialize + Clone + Send,
         V: Serialize,
         P: Serialize,
     {
-        let i = self.inner.lock().await;
-        let join_ref = i.join_ref;
+        let join_ref = self.join_ref;
         let message: tungstenite::Message = Message::<T, V, P, serde_json::Value>::join(
-            i.join_ref,
-            i.topic.clone(),
-            i.params.clone(),
+            self.join_ref,
+            self.topic.clone(),
+            self.params.clone(),
         )
         .try_into()?;
         let (message, rx) = TungsteniteMessageResult::new(message);
 
         // TODO: handle this being closed
-        i.out_tx.send(message).expect("out tx closed");
-        std::mem::drop(i);
+        self.out_tx.send(message).expect("out tx closed");
 
         rx.await.expect("oneshot")?;
         Ok(join_ref)

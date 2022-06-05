@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio::sync::oneshot;
+use tokio::{select, sync::oneshot};
 use tokio_tungstenite::tungstenite;
+
+use crate::error::Error;
 
 use self::event::{Event, ProtocolEvent};
 
@@ -247,5 +251,57 @@ impl<V, P, R> EventPayloadResult<V, P, R> {
             },
             rx,
         )
+    }
+}
+
+pub(crate) async fn run_message<T, V, P, R>(
+    send_callback: oneshot::Receiver<Result<(), tungstenite::Error>>,
+    mut receive_callback: oneshot::Receiver<Result<Message<T, V, P, R>, Error>>,
+    timeout: Duration,
+) -> Result<Message<T, V, P, R>, Error>
+where
+    T: Serialize,
+    V: Serialize,
+    P: Serialize,
+    R: Serialize,
+{
+    let timeout = tokio::time::sleep(timeout);
+    tokio::pin!(timeout);
+
+    // Await the send callback
+    select! {
+        _ = &mut timeout => {
+            return Err(Error::Timeout);
+        },
+
+        Err(e) = &mut receive_callback => {
+            panic!("todo: handle error on transmission");
+        },
+
+        v = send_callback => {
+            match v {
+                // todo: how tf do you handle this
+                Err(e) => todo!(),
+                Ok(Err(e)) => {
+                    return Err(Error::WebSocket(e));
+                },
+                _ => {}
+            };
+        }
+    };
+
+    // Await the receive callback
+    select! {
+        _ = &mut timeout => {
+            return Err(Error::Timeout);
+        }
+
+        v = receive_callback => {
+            match v {
+                // todo: how tf do you handle this
+                Err(e) => todo!(),
+                Ok(v) => v,
+            }
+        }
     }
 }

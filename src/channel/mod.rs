@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     error::Error,
-    message::{event::Event, EventPayloadResult, Message, Payload},
+    message::{event::Event, run_message, EventPayloadResult, Message, Payload},
 };
 use serde::Serialize;
 use tokio::{
@@ -40,79 +40,6 @@ where
     P: Serialize,
     R: Serialize,
 {
-    async fn run_message(
-        event: Event<V>,
-        payload: Payload<P, R>,
-        handler_tx: UnboundedSender<HandlerToChannelMessage<T, V, P, R>>,
-        timeout: Duration,
-    ) -> Result<Message<T, V, P, R>, Error>
-    where
-        T: Serialize,
-        V: Serialize,
-        P: Serialize,
-        R: Serialize,
-    {
-        let timeout = time::sleep(timeout);
-        tokio::pin!(timeout);
-
-        let (event_payload, receiver) = EventPayloadResult::new(event, payload);
-        let (tx, mut rx) = oneshot::channel();
-        let _ = handler_tx.send((event_payload, tx));
-
-        // Await the send
-        select! {
-            _ = &mut timeout => {
-                return Err(Error::Timeout);
-            },
-
-            Err(e) = &mut rx => {
-                panic!("todo: handle error on transmission");
-            },
-
-
-            v = receiver => {
-                match v {
-                    // todo: how tf do you handle this
-                    Err(e) => todo!(),
-                    Ok(Err(e)) => {
-                        return Err(Error::WebSocket(e));
-                    },
-                    _ => {}
-                };
-            },
-        };
-
-        select! {
-            _ = &mut timeout => {
-                Err(Error::Timeout)
-            }
-            v = rx => {
-                match v {
-                    // todo: how tf do you handle this
-                    Err(e) => todo!(),
-                    Ok(v) => v,
-                }
-            }
-        }
-    }
-
-    // pub async fn send_raw(&mut self, message: Message<T, V, P, R>) -> Result<Message<T, V, P, R>, Error>
-    // where
-    //     T: Serialize + Send + 'static,
-    //     V: Serialize + Send + 'static,
-    //     P: Serialize + Send + 'static,
-    //     R: Serialize + Send + 'static,
-    // {
-    //     tokio::spawn(ChannelHandler::run_message(
-    //         message,
-    //         self.handler_tx.clone(),
-    //         self.timeout,
-    //     ))
-    //     .await
-    //     // todo: handle joinerror
-    //     .unwrap()
-    // }
-
     pub async fn send(
         &mut self,
         event: Event<V>,
@@ -124,15 +51,13 @@ where
         P: Serialize + Send + 'static,
         R: Serialize + Send + 'static,
     {
-        tokio::spawn(ChannelHandler::run_message(
-            event,
-            payload,
-            self.handler_tx.clone(),
-            self.timeout,
-        ))
-        .await
-        // todo: handle joinerror
-        .unwrap()
+        let (event_payload, receiver) = EventPayloadResult::new(event, payload);
+        let (tx, rx) = oneshot::channel();
+        let _ = self.handler_tx.send((event_payload, tx));
+
+        tokio::spawn(run_message(receiver, rx, self.timeout))
+            .await
+            .unwrap()
     }
 
     pub fn subscribe(&mut self) -> Receiver<Message<T, V, P, R>> {

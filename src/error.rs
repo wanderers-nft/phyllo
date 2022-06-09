@@ -12,3 +12,11 @@ pub enum Error {
     #[error("message reply timeout")]
     Timeout,
 }
+
+#[derive(Debug, Error)]
+pub(crate) enum ChannelJoinError<P> {
+    #[error(transparent)]
+    Error(#[from] Error),
+    #[error("sple")]
+    Join(P),
+}

@@ -45,6 +45,18 @@ impl Message<String, (), (), ()> {
     }
 }
 
+impl<T> Message<T, (), (), ()> {
+    pub fn leave(topic: T, reference: u64) -> Self {
+        Self {
+            join_ref: Some(0),
+            reference: Some(reference),
+            topic,
+            event: Event::Protocol(ProtocolEvent::Leave),
+            payload: None,
+        }
+    }
+}
+
 impl<T, V, P, R> Message<T, V, P, R>
 where
     T: Serialize,

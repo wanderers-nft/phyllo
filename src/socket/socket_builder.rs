@@ -153,6 +153,7 @@ where
                     let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Closed));
                 }
             }
+            self.reference.reset();
 
             // Connect to socket
             let (mut sink, mut stream) = self.connect_with_backoff().await.map(|ws| ws.split())?;

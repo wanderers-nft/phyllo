@@ -232,7 +232,7 @@ where
         Ok(())
     }
 
-    async fn outbound(&mut self, (message, reply_callback): HandlerChannelMessage<T>)
+    async fn outbound(&mut self, HandlerChannelMessage { message, reply_callback }: HandlerChannelMessage<T>)
     where
         T: Clone,
     {

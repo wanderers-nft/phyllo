@@ -9,15 +9,15 @@ use serde_json::Value;
 use tokio::sync::{
     broadcast::{self, Receiver},
     mpsc::UnboundedSender,
-    oneshot::{self, Sender},
+    oneshot,
 };
 
 pub mod channel_builder;
 
-type HandlerChannelMessage<T> = (
-    WithCallback<(Event<Value>, Payload<Value, Value>)>, // send callback
-    Sender<Result<Message<T, Value, Value, Value>, Error>>, // reply callback
-);
+struct HandlerChannelMessage<T> {
+    message: WithCallback<(Event<Value>, Payload<Value, Value>)>,
+    reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
+}
 
 #[derive(Clone)]
 pub struct ChannelHandler<T, V, P, R> {
@@ -51,7 +51,10 @@ where
         let (event_payload, receiver) =
             WithCallback::new((Event::Event(event), Payload::Custom(payload)));
         let (tx, rx) = oneshot::channel();
-        let _ = self.handler_tx.send((event_payload, tx));
+        let _ = self.handler_tx.send(HandlerChannelMessage {
+            message: event_payload,
+            reply_callback: tx,
+        });
 
         let x = tokio::spawn(run_message(receiver, rx, self.timeout))
             .await

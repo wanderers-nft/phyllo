@@ -1,7 +1,7 @@
 use super::{Reference, SocketHandler};
 use crate::{
     channel::{ChannelStatus, SocketChannelMessage},
-    message::{Message, TungsteniteMessageResult},
+    message::{Message, WithCallback},
 };
 use backoff::ExponentialBackoff;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
@@ -85,7 +85,7 @@ impl SocketBuilder {
         // println!("{}", self.endpoint);
 
         // Send, receiver for client -> server
-        let (out_tx, out_rx) = unbounded_channel::<TungsteniteMessageResult>();
+        let (out_tx, out_rx) = unbounded_channel();
 
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
         let (close_tx, _) = broadcast::channel(1);
@@ -115,8 +115,8 @@ impl SocketBuilder {
 }
 
 struct Socket<T> {
-    out_rx: UnboundedReceiver<TungsteniteMessageResult>,
-    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage>>>>,
+    out_rx: UnboundedReceiver<WithCallback<tungstenite::Message>>,
+    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage<T>>>>>,
 
     reference: Reference,
     endpoint: Url,
@@ -214,14 +214,14 @@ where
 
     async fn on_outbound(
         sink: &mut Sink,
-        message: Option<TungsteniteMessageResult>,
+        message: Option<WithCallback<tungstenite::Message>>,
     ) -> Result<(), tungstenite::Error> {
         // println!("Outbound: {:?}", &message);
         // Check if channel is closed
         if let Some(message_res) = message {
             let _ = message_res
                 .callback
-                .send(sink.feed(message_res.message).await);
+                .send(sink.feed(message_res.content).await);
         }
         Ok(())
     }
@@ -250,9 +250,7 @@ where
         let subscriptions = self.subscriptions.lock().await;
         if let Some(chan) = subscriptions.get(&message.topic) {
             // TODO: handle this error
-            let _ = chan.send(SocketChannelMessage::Message(tungstenite::Message::Text(
-                text,
-            )));
+            let _ = chan.send(SocketChannelMessage::Message(message));
         }
         Ok(())
     }

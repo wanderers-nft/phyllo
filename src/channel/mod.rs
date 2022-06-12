@@ -2,32 +2,26 @@ use std::time::Duration;
 
 use crate::{
     error::Error,
-    message::{event::Event, run_message, EventPayloadResult, Message, Payload},
+    message::{event::Event, run_message, Message, Payload, WithCallback},
 };
-use serde::Serialize;
-use tokio::{
-    select,
-    sync::{
-        broadcast::{self, Receiver},
-        mpsc::UnboundedSender,
-        oneshot::{self, Sender},
-    },
-    time,
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
+use tokio::sync::{
+    broadcast::{self, Receiver},
+    mpsc::UnboundedSender,
+    oneshot::{self, Sender},
 };
-use tokio_tungstenite::tungstenite;
 
 pub mod channel_builder;
 
-type HandlerToChannelMessage<T, V, P, R> = (
-    EventPayloadResult<V, P, R>,
-    Sender<Result<Message<T, V, P, R>, Error>>,
+type HandlerChannelMessage<T> = (
+    WithCallback<(Event<Value>, Payload<Value, Value>)>, // send callback
+    Sender<Result<Message<T, Value, Value, Value>, Error>>, // reply callback
 );
 
 #[derive(Clone)]
 pub struct ChannelHandler<T, V, P, R> {
-    // reference: Reference,
-    // join_ref: Arc<AtomicU64>,
-    handler_tx: UnboundedSender<HandlerToChannelMessage<T, V, P, R>>,
+    handler_tx: UnboundedSender<HandlerChannelMessage<T>>,
     timeout: Duration,
     broadcast_tx: broadcast::Sender<Message<T, V, P, R>>,
     close: broadcast::Sender<()>,
@@ -47,17 +41,37 @@ where
     ) -> Result<Message<T, V, P, R>, Error>
     where
         T: Serialize + Send + 'static,
-        V: Serialize + Send + 'static,
-        P: Serialize + Send + 'static,
-        R: Serialize + Send + 'static,
+        V: Serialize + DeserializeOwned + Send + 'static,
+        P: Serialize + DeserializeOwned + Send + 'static,
+        R: Serialize + DeserializeOwned + Send + 'static,
     {
-        let (event_payload, receiver) = EventPayloadResult::new(event, payload);
+        let event = serde_json::to_value(&event)?;
+        let payload = serde_json::to_value(&payload)?;
+
+        let (event_payload, receiver) =
+            WithCallback::new((Event::Event(event), Payload::Custom(payload)));
         let (tx, rx) = oneshot::channel();
         let _ = self.handler_tx.send((event_payload, tx));
 
-        tokio::spawn(run_message(receiver, rx, self.timeout))
+        let x = tokio::spawn(run_message(receiver, rx, self.timeout))
             .await
-            .unwrap()
+            .unwrap()?;
+
+        Ok(Message {
+            join_ref: x.join_ref,
+            reference: x.reference,
+            topic: x.topic,
+            event: x.event.try_map(serde_json::from_value)?,
+            payload: x
+                .payload
+                .map(|p| {
+                    Ok::<_, serde_json::Error>(
+                        p.try_map_push_reply(serde_json::from_value)?
+                            .try_map_custom(serde_json::from_value)?,
+                    )
+                })
+                .transpose()?,
+        })
     }
 
     pub fn subscribe(&mut self) -> Receiver<Message<T, V, P, R>> {
@@ -86,7 +100,7 @@ impl ChannelStatus {
     }
 }
 
-pub(crate) enum SocketChannelMessage {
-    Message(tungstenite::Message),
+pub(crate) enum SocketChannelMessage<T> {
+    Message(Message<T, Value, Value, Value>),
     ChannelStatus(ChannelStatus),
 }

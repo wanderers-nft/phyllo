@@ -1,7 +1,7 @@
 use self::socket_builder::SocketBuilder;
 use crate::channel::channel_builder::ChannelBuilder;
 use crate::channel::{ChannelHandler, SocketChannelMessage};
-use crate::message::TungsteniteMessageResult;
+use crate::message::WithCallback;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
@@ -19,6 +19,7 @@ use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedSender},
     Mutex,
 };
+use tokio_tungstenite::tungstenite;
 use url::Url;
 
 pub mod socket_builder;
@@ -26,8 +27,8 @@ pub mod socket_builder;
 #[derive(Clone)]
 pub struct SocketHandler<T> {
     reference: Reference,
-    out_tx: UnboundedSender<TungsteniteMessageResult>,
-    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage>>>>,
+    out_tx: UnboundedSender<WithCallback<tungstenite::Message>>,
+    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage<T>>>>>,
     close: broadcast::Sender<()>,
     is_closed: Arc<AtomicBool>,
 }
@@ -59,7 +60,7 @@ where
         R: Serialize + DeserializeOwned + Send + Clone + 'static,
     {
         let mut subscriptions = self.subscriptions.lock().await;
-        let (in_tx, in_rx) = unbounded_channel::<SocketChannelMessage>();
+        let (in_tx, in_rx) = unbounded_channel::<SocketChannelMessage<T>>();
 
         // Cannot subscribe to a channel more than once
         if subscriptions.contains_key(&channel_builder.topic) {

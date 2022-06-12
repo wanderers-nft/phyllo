@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 use tokio::{select, sync::oneshot};
 use tokio_tungstenite::tungstenite;
 
@@ -26,6 +27,54 @@ pub enum Payload<P, R> {
     Custom(R),
 }
 
+impl<P, R> Payload<P, R> {
+    pub fn map_push_reply<Q, F>(self, f: F) -> Payload<Q, R>
+    where
+        F: FnOnce(P) -> Q,
+    {
+        match self {
+            Payload::PushReply { status, response } => Payload::PushReply {
+                status,
+                response: f(response),
+            },
+            Payload::Custom(c) => Payload::Custom(c),
+        }
+    }
+
+    pub fn map_custom<S, F>(self, f: F) -> Payload<P, S>
+    where
+        F: FnOnce(R) -> S,
+    {
+        match self {
+            Payload::PushReply { status, response } => Payload::PushReply { status, response },
+            Payload::Custom(c) => Payload::Custom(f(c)),
+        }
+    }
+
+    pub fn try_map_push_reply<Q, F, E>(self, f: F) -> Result<Payload<Q, R>, E>
+    where
+        F: FnOnce(P) -> Result<Q, E>,
+    {
+        match self {
+            Payload::PushReply { status, response } => Ok(Payload::PushReply {
+                status,
+                response: f(response)?,
+            }),
+            Payload::Custom(c) => Ok(Payload::Custom(c)),
+        }
+    }
+
+    pub fn try_map_custom<S, F, E>(self, f: F) -> Result<Payload<P, S>, E>
+    where
+        F: FnOnce(R) -> Result<S, E>,
+    {
+        match self {
+            Payload::PushReply { status, response } => Ok(Payload::PushReply { status, response }),
+            Payload::Custom(c) => Ok(Payload::Custom(f(c)?)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PushStatus {
@@ -45,7 +94,7 @@ impl Message<String, (), (), ()> {
     }
 }
 
-impl<T> Message<T, (), (), ()> {
+impl<T> Message<T, Value, Value, Value> {
     pub fn leave(topic: T, reference: u64) -> Self {
         Self {
             join_ref: Some(0),
@@ -167,102 +216,41 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct MessageResult<T, V, P, R> {
-    pub message: Message<T, V, P, R>,
-    pub callback: oneshot::Sender<Result<(), tungstenite::Error>>,
+pub(crate) struct WithCallback<T> {
+    pub(crate) content: T,
+    pub(crate) callback: oneshot::Sender<Result<(), tungstenite::Error>>,
 }
 
-impl<T, V, P, R> MessageResult<T, V, P, R> {
-    pub fn new(
-        message: Message<T, V, P, R>,
-    ) -> (Self, oneshot::Receiver<Result<(), tungstenite::Error>>) {
+impl<T> WithCallback<T> {
+    pub(crate) fn new(content: T) -> (Self, oneshot::Receiver<Result<(), tungstenite::Error>>) {
         let (tx, rx) = oneshot::channel();
         (
             Self {
-                message,
+                content,
                 callback: tx,
             },
             rx,
         )
     }
-}
 
-impl<T, V, P, R> TryFrom<MessageResult<T, V, P, R>> for TungsteniteMessageResult
-where
-    T: Serialize,
-    V: Serialize,
-    P: Serialize,
-    R: Serialize,
-{
-    type Error = serde_json::Error;
+    pub(crate) fn map<U>(self) -> WithCallback<U>
+    where
+        T: Into<U>,
+    {
+        WithCallback {
+            content: self.content.into(),
+            callback: self.callback,
+        }
+    }
 
-    fn try_from(value: MessageResult<T, V, P, R>) -> Result<Self, Self::Error> {
-        Ok(Self {
-            message: value.message.try_into()?,
-            callback: value.callback,
+    pub(crate) fn try_map<U>(self) -> Result<WithCallback<U>, T::Error>
+    where
+        T: TryInto<U>,
+    {
+        self.content.try_into().map(|v| WithCallback {
+            content: v,
+            callback: self.callback,
         })
-    }
-}
-
-#[derive(Debug)]
-pub struct TungsteniteMessageResult {
-    pub message: tungstenite::Message,
-    pub callback: oneshot::Sender<Result<(), tungstenite::Error>>,
-}
-
-impl TungsteniteMessageResult {
-    pub fn new(
-        message: tungstenite::Message,
-    ) -> (Self, oneshot::Receiver<Result<(), tungstenite::Error>>) {
-        let (tx, rx) = oneshot::channel();
-        (
-            Self {
-                message,
-                callback: tx,
-            },
-            rx,
-        )
-    }
-}
-
-impl<T, V, P, R> TryFrom<TungsteniteMessageResult> for MessageResult<T, V, P, R>
-where
-    T: DeserializeOwned,
-    V: DeserializeOwned,
-    P: DeserializeOwned,
-    R: DeserializeOwned,
-{
-    type Error = serde_json::Error;
-
-    fn try_from(value: TungsteniteMessageResult) -> Result<Self, Self::Error> {
-        Ok(Self {
-            message: value.message.try_into()?,
-            callback: value.callback,
-        })
-    }
-}
-
-pub struct EventPayloadResult<V, P, R> {
-    pub event: Event<V>,
-    pub payload: Payload<P, R>,
-    pub callback: oneshot::Sender<Result<(), tungstenite::Error>>,
-}
-
-impl<V, P, R> EventPayloadResult<V, P, R> {
-    pub fn new(
-        event: Event<V>,
-        payload: Payload<P, R>,
-    ) -> (Self, oneshot::Receiver<Result<(), tungstenite::Error>>) {
-        let (tx, rx) = oneshot::channel();
-        (
-            Self {
-                event,
-                payload,
-                callback: tx,
-            },
-            rx,
-        )
     }
 }
 

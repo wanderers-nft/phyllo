@@ -6,11 +6,8 @@ use crate::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use tokio::sync::{
-    broadcast::{self, Receiver},
-    mpsc::UnboundedSender,
-    oneshot,
-};
+use tokio::sync::{broadcast, mpsc::UnboundedSender, oneshot};
+use tokio_tungstenite::tungstenite;
 
 pub mod channel_builder;
 
@@ -19,12 +16,21 @@ struct HandlerChannelMessage<T> {
     reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
 }
 
+enum HandlerChannelInternalMessage<T, V, P, R> {
+    Leave {
+        callback: WithCallback<()>,
+        reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
+    },
+    Broadcast {
+        callback: oneshot::Sender<broadcast::Receiver<Message<T, V, P, R>>>,
+    },
+}
+
 #[derive(Clone)]
 pub struct ChannelHandler<T, V, P, R> {
     handler_tx: UnboundedSender<HandlerChannelMessage<T>>,
     timeout: Duration,
-    broadcast_tx: broadcast::Sender<Message<T, V, P, R>>,
-    close: broadcast::Sender<()>,
+    handler_internal_tx: UnboundedSender<HandlerChannelInternalMessage<T, V, P, R>>,
 }
 
 impl<T, V, P, R> ChannelHandler<T, V, P, R>
@@ -40,10 +46,10 @@ where
         payload: Payload<P, R>,
     ) -> Result<Message<T, V, P, R>, Error>
     where
-        T: Serialize + Send + 'static,
-        V: Serialize + DeserializeOwned + Send + 'static,
-        P: Serialize + DeserializeOwned + Send + 'static,
-        R: Serialize + DeserializeOwned + Send + 'static,
+        T: Serialize,
+        V: Serialize + DeserializeOwned,
+        P: Serialize + DeserializeOwned,
+        R: Serialize + DeserializeOwned,
     {
         let event = serde_json::to_value(&event)?;
         let payload = serde_json::to_value(&payload)?;
@@ -56,16 +62,14 @@ where
             reply_callback: tx,
         });
 
-        let x = tokio::spawn(run_message(receiver, rx, self.timeout))
-            .await
-            .unwrap()?;
+        let res = run_message(receiver, rx, self.timeout).await?;
 
         Ok(Message {
-            join_ref: x.join_ref,
-            reference: x.reference,
-            topic: x.topic,
-            event: x.event.try_map(serde_json::from_value)?,
-            payload: x
+            join_ref: res.join_ref,
+            reference: res.reference,
+            topic: res.topic,
+            event: res.event.try_map(serde_json::from_value)?,
+            payload: res
                 .payload
                 .map(|p| {
                     Ok::<_, serde_json::Error>(
@@ -77,33 +81,82 @@ where
         })
     }
 
-    pub fn subscribe(&mut self) -> Receiver<Message<T, V, P, R>> {
-        self.broadcast_tx.subscribe()
+    pub async fn subscribe(&mut self) -> broadcast::Receiver<Message<T, V, P, R>> {
+        let (tx, rx) = oneshot::channel();
+
+        // todo: handle this error
+        let _ = self
+            .handler_internal_tx
+            .send(HandlerChannelInternalMessage::Broadcast { callback: tx });
+
+        // todo: handle this error
+        rx.await.unwrap()
     }
 
-    pub fn close(self) {
-        let _ = self.close.send(());
+    pub async fn close(self) -> Result<Message<T, V, P, R>, Error>
+    where
+        T: Serialize,
+        V: Serialize + DeserializeOwned,
+        P: Serialize + DeserializeOwned,
+        R: Serialize + DeserializeOwned,
+    {
+        let (callback, receiver) = WithCallback::new(());
+        let (tx, rx) = oneshot::channel();
+
+        let _ = self
+            .handler_internal_tx
+            .send(HandlerChannelInternalMessage::Leave {
+                callback,
+                reply_callback: tx,
+            });
+
+        let res = run_message(receiver, rx, self.timeout).await?;
+
+        Ok(Message {
+            join_ref: res.join_ref,
+            reference: res.reference,
+            topic: res.topic,
+            event: res.event.try_map(serde_json::from_value)?,
+            payload: res
+                .payload
+                .map(|p| {
+                    Ok::<_, serde_json::Error>(
+                        p.try_map_push_reply(serde_json::from_value)?
+                            .try_map_custom(serde_json::from_value)?,
+                    )
+                })
+                .transpose()?,
+        })
     }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ChannelStatus {
+    // Channel has just been created and has not attempted a connection before.
+    Created,
+    // Channel has been closed by the server.
     Closed,
+    // Channel has recieved an error from the server.
     Errored,
+    // Channel has been joined.
     Joined,
-    Joining,
-    Leaving,
+    // The underlying socket has closed.
     SocketClosed,
 }
 
 impl ChannelStatus {
     pub fn should_rejoin(self) -> bool {
-        self == Self::Closed || self == Self::Errored
+        self == Self::Created || self == Self::Errored
     }
 }
 
 pub(crate) enum SocketChannelMessage<T> {
     Message(Message<T, Value, Value, Value>),
     ChannelStatus(ChannelStatus),
+}
+
+pub(crate) enum ChannelSocketMessage<T> {
+    Message(WithCallback<tungstenite::Message>),
+    TaskEnded(T),
 }

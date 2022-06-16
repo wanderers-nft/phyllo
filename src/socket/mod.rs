@@ -1,25 +1,16 @@
 use self::socket_builder::SocketBuilder;
 use crate::channel::channel_builder::ChannelBuilder;
-use crate::channel::{ChannelHandler, SocketChannelMessage};
-use crate::message::WithCallback;
+use crate::channel::{ChannelHandler, ChannelSocketMessage, SocketChannelMessage};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::sync::atomic::AtomicBool;
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
 };
-use tokio::sync::broadcast;
-use tokio::sync::{
-    mpsc::{unbounded_channel, UnboundedSender},
-    Mutex,
-};
-use tokio_tungstenite::tungstenite;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 use url::Url;
 
 pub mod socket_builder;
@@ -27,10 +18,7 @@ pub mod socket_builder;
 #[derive(Clone)]
 pub struct SocketHandler<T> {
     reference: Reference,
-    out_tx: UnboundedSender<WithCallback<tungstenite::Message>>,
-    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage<T>>>>>,
-    close: broadcast::Sender<()>,
-    is_closed: Arc<AtomicBool>,
+    handler_tx: UnboundedSender<HandlerSocketMessage<T>>,
 }
 
 impl<T> SocketHandler<T>
@@ -59,27 +47,21 @@ where
         P: Serialize + DeserializeOwned + Send + Clone + 'static,
         R: Serialize + DeserializeOwned + Send + Clone + 'static,
     {
-        let mut subscriptions = self.subscriptions.lock().await;
-        let (in_tx, in_rx) = unbounded_channel::<SocketChannelMessage<T>>();
+        let (tx, rx) = oneshot::channel();
 
-        // Cannot subscribe to a channel more than once
-        if subscriptions.contains_key(&channel_builder.topic) {
-            // TODO: make this an error
-            panic!("channel already exists");
-        }
-        subscriptions.insert(channel_builder.topic.clone(), in_tx);
-        std::mem::drop(subscriptions);
+        let _ = self.handler_tx.send(HandlerSocketMessage::Subscribe {
+            topic: channel_builder.topic.clone(),
+            callback: tx,
+        });
 
-        channel_builder.build::<V, P, R>(self.reference.clone(), self.out_tx.clone(), in_rx)
+        // todo: handle this error
+        let (channel_socket, socket_channel) = rx.await.unwrap();
+
+        channel_builder.build::<V, P, R>(self.reference.clone(), socket_channel, channel_socket)
     }
 
     pub fn close(self) {
-        self.is_closed.store(true, Ordering::Relaxed);
-        let _ = self.close.send(());
-    }
-
-    pub fn is_closed(&self) -> bool {
-        self.is_closed.load(Ordering::Relaxed)
+        let _ = self.handler_tx.send(HandlerSocketMessage::Close);
     }
 }
 
@@ -104,4 +86,15 @@ impl Default for Reference {
     fn default() -> Self {
         Self::new()
     }
+}
+
+enum HandlerSocketMessage<T> {
+    Close,
+    Subscribe {
+        topic: T,
+        callback: oneshot::Sender<(
+            UnboundedReceiver<SocketChannelMessage<T>>,
+            UnboundedSender<ChannelSocketMessage<T>>,
+        )>,
+    },
 }

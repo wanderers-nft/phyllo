@@ -14,7 +14,6 @@ use tokio::{
         oneshot,
     },
 };
-use tokio_tungstenite::tungstenite;
 
 use crate::{
     error::{ChannelJoinError, Error},
@@ -25,7 +24,10 @@ use crate::{
     socket::Reference,
 };
 
-use super::{ChannelHandler, ChannelStatus, HandlerChannelMessage, SocketChannelMessage};
+use super::{
+    ChannelHandler, ChannelSocketMessage, ChannelStatus, HandlerChannelInternalMessage,
+    HandlerChannelMessage, SocketChannelMessage,
+};
 
 #[derive(Debug, Clone)]
 pub struct ChannelBuilder<T> {
@@ -91,7 +93,7 @@ where
     pub(crate) fn build<V, P, R>(
         &self,
         reference: Reference,
-        out_tx: UnboundedSender<WithCallback<tungstenite::Message>>,
+        out_tx: UnboundedSender<ChannelSocketMessage<T>>,
         in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
     ) -> ChannelHandler<T, V, P, R>
     where
@@ -102,11 +104,12 @@ where
     {
         let (handler_tx, handler_rx) = unbounded_channel();
         let (broadcast_tx, _) = broadcast::channel(self.broadcast_buffer);
-        let (close_tx, close_rx) = broadcast::channel(1);
         let (rejoin_tx, rejoin_rx) = unbounded_channel();
 
+        let (handler_internal_tx, handler_internal_rx) = unbounded_channel();
+
         let channel: Channel<T, V, P, R> = Channel {
-            status: ChannelStatus::Closed,
+            status: ChannelStatus::Created,
             topic: self.topic.clone(),
             rejoin_timeout: self.rejoin_timeout,
             rejoin_after: self.rejoin.clone(),
@@ -117,10 +120,10 @@ where
             rejoin_tx,
             rejoin_rx,
             handler_rx,
+            handler_internal_rx,
             out_tx,
             in_rx,
             broadcast: broadcast_tx.clone(),
-            close: close_rx,
         };
 
         tokio::spawn(channel.run());
@@ -128,19 +131,13 @@ where
         ChannelHandler {
             handler_tx,
             timeout: self.timeout,
-            broadcast_tx,
-            close: close_tx,
+            handler_internal_tx,
         }
     }
 }
 
 type RepliesMapping<T> =
     HashMap<u64, oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>>;
-
-type RejoinToChannelMessage<T, V, P, R> = (
-    WithCallback<Message<T, V, P, R>>,
-    oneshot::Sender<Result<Message<T, V, P, R>, Error>>,
-);
 
 #[derive(Debug)]
 struct Channel<T, V, P, R> {
@@ -155,19 +152,21 @@ struct Channel<T, V, P, R> {
     reference: Reference,
     join_ref: u64,
 
-    rejoin_tx: UnboundedSender<RejoinToChannelMessage<T, Value, Value, Value>>,
-    rejoin_rx: UnboundedReceiver<RejoinToChannelMessage<T, Value, Value, Value>>,
+    rejoin_tx: UnboundedSender<RejoinChannelMessage<T, Value, Value, Value>>,
+    rejoin_rx: UnboundedReceiver<RejoinChannelMessage<T, Value, Value, Value>>,
 
     // In from handler
     handler_rx: UnboundedReceiver<HandlerChannelMessage<T>>,
+    // In from handler (for internal messages)
+    handler_internal_rx: UnboundedReceiver<HandlerChannelInternalMessage<T, V, P, R>>,
+
     // Out to socket
-    out_tx: UnboundedSender<WithCallback<tungstenite::Message>>,
+    out_tx: UnboundedSender<ChannelSocketMessage<T>>,
     // In from socket
     in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
+
     // Broadcaster for non-reply messages
     broadcast: broadcast::Sender<Message<T, V, P, R>>,
-
-    close: broadcast::Receiver<()>,
 }
 
 impl<T, V, P, R> Channel<T, V, P, R>
@@ -192,6 +191,11 @@ where
         match message {
             SocketChannelMessage::Message(msg) => {
                 match (&msg.event, &msg.payload) {
+                    // On close, do not attempt re-connection
+                    (Event::Protocol(ProtocolEvent::Close), _) => {
+                        self.status = ChannelStatus::Closed;
+                    }
+
                     // On error, mark channel has errored so the next iteration can attempt re-connect
                     (Event::Protocol(ProtocolEvent::Error), _) => {
                         self.status = ChannelStatus::Errored;
@@ -232,27 +236,24 @@ where
         Ok(())
     }
 
-    async fn outbound(&mut self, HandlerChannelMessage { message, reply_callback }: HandlerChannelMessage<T>)
-    where
+    async fn outbound(
+        &mut self,
+        HandlerChannelMessage {
+            message,
+            reply_callback,
+        }: HandlerChannelMessage<T>,
+    ) where
         T: Clone,
     {
-        let reference = self.reference.next();
-
-        let WithCallback {
-            content: (event, payload),
-            callback,
-        } = message;
-
-        let message = WithCallback {
-            content: Message::new(
+        let message = message.map(|(e, p)| {
+            Message::new(
                 self.join_ref,
-                reference,
+                self.reference.next(),
                 self.topic.clone(),
-                event,
-                Some(payload),
-            ),
-            callback,
-        };
+                e,
+                Some(p),
+            )
+        });
 
         self.outbound_inner(message, reply_callback)
     }
@@ -260,7 +261,7 @@ where
     fn outbound_inner(
         &mut self,
         message: WithCallback<Message<T, Value, Value, Value>>,
-        callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
+        reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
     ) {
         let reference = message.content.reference.unwrap();
         match self.replies.entry(reference) {
@@ -268,11 +269,11 @@ where
                 panic!("reference already used, wtf")
             }
             Entry::Vacant(e) => {
-                e.insert(callback);
+                e.insert(reply_callback);
             }
         }
 
-        let message = match message.try_map() {
+        let message = match message.try_map(TryInto::try_into) {
             Ok(v) => v,
             Err(e) => {
                 self.send_reply(reference, Err(Error::Serde(e)));
@@ -280,7 +281,18 @@ where
             }
         };
 
-        let _ = self.out_tx.send(message);
+        let _ = self.out_tx.send(ChannelSocketMessage::Message(message));
+    }
+
+    fn outbound_leave(
+        &mut self,
+        message: WithCallback<()>,
+        reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
+    ) where
+        T: Clone,
+    {
+        let message = message.map(|_| Message::leave(self.topic.clone(), self.reference.next()));
+        self.outbound_inner(message, reply_callback);
     }
 
     pub(crate) async fn run(mut self)
@@ -291,49 +303,52 @@ where
         R: Send + 'static,
     {
         'retry: loop {
-            let mut rejoin: OptionFuture<_> = if self.status.should_rejoin() {
-                let rejoiner = Rejoin {
-                    rejoin_after: self.rejoin_after.clone(),
-                    timeout: self.rejoin_timeout,
-                    reference: self.reference.clone(),
-                    topic: self.topic.clone(),
-                    params: self.params.clone(),
-                    rejoin_tx: self.rejoin_tx.clone(),
-                };
-                Some(tokio::spawn(rejoiner.join_with_backoff())).into()
-            } else {
-                None.into()
+            let mut rejoin: OptionFuture<_> = match self.status {
+                ChannelStatus::Errored | ChannelStatus::Created => {
+                    let rejoiner = Rejoin {
+                        rejoin_after: self.rejoin_after.clone(),
+                        timeout: self.rejoin_timeout,
+                        reference: self.reference.clone(),
+                        topic: self.topic.clone(),
+                        params: self.params.clone(),
+                        rejoin_tx: self.rejoin_tx.clone(),
+                    };
+                    Some(tokio::spawn(rejoiner.join_with_backoff())).into()
+                }
+                _ => None.into(),
             };
 
             'inner: loop {
                 select! {
-                    // // Close signal
-                    // _ = self.close.recv() => {
-                    //     let leave_message = Message::leave(
-                    //         self.topic.clone(),
-                    //         self.reference.next()
-                    //     );
-                    //     // let _ = self.inbound(SocketChannelMessage::Message(leave_message)).await;
-                    //     break 'retry;
-                    // },
-
-                    // In from channel handler. Only attempt to pull values from the queue if we know we can send them out
-                    Some(v) = self.handler_rx.recv(), if !self.status.should_rejoin() => {
-                        let _ = self.outbound(v).await;
-                    },
-
-                    // In from inbound
-                    Some(v) = self.in_rx.recv() => {
-                        let _ = self.inbound(v).await;
-                    },
-
-                    // In from rejoiner
-                    Some(v) = self.rejoin_rx.recv() => {
-                        let (r, c) = v;
-                        let _ = self.outbound_inner(r, c);
+                    Some(v) = self.handler_internal_rx.recv() => {
+                        match v {
+                            HandlerChannelInternalMessage::Leave { callback, reply_callback } => {
+                                self.outbound_leave(callback, reply_callback);
+                            },
+                            HandlerChannelInternalMessage::Broadcast { callback } => {
+                                let _ = callback.send(self.broadcast.subscribe());
+                            },
+                        }
                     }
 
-                    // Rejoiner
+                    // In from channel handler. Only attempt to pull values from the queue if we know we can send them out
+                    Some(value) = self.handler_rx.recv(), if !self.status.should_rejoin() => {
+                        let _ = self.outbound(value).await;
+                    },
+
+                    // Inbound from socket
+                    Some(value) = self.in_rx.recv() => {
+                        let _ = self.inbound(value).await;
+                    },
+
+                    // Inbound from rejoiner
+                    Some(RejoinChannelMessage { message, reply_callback }) = self.rejoin_rx.recv() => {
+                        let _ = self.outbound_inner(message, reply_callback);
+                    }
+
+                    // When rejoiner task is complete.
+                    // Note that on a successful rejoin, the channel status is set to Joined, which means that it is
+                    // impossible for the rejoin to be polled twice.
                     Some(v) = &mut rejoin, if self.status.should_rejoin() => {
                         match v {
                             Ok(Ok(new_join_ref)) => {
@@ -345,10 +360,32 @@ where
                             }
                         }
                     }
+
+                    else => {}
                 }
+
+                match self.status {
+                    // Closed: this channel task needs to be destroyed
+                    ChannelStatus::Closed | ChannelStatus::SocketClosed => {
+                        break 'retry;
+                    }
+                    // We can still reconnect
+                    ChannelStatus::Errored => {
+                        break 'inner;
+                    }
+                    _ => {}
+                };
             }
         }
+        let _ = self
+            .out_tx
+            .send(ChannelSocketMessage::TaskEnded(self.topic));
     }
+}
+
+struct RejoinChannelMessage<T, V, P, R> {
+    message: WithCallback<Message<T, V, P, R>>,
+    reply_callback: oneshot::Sender<Result<Message<T, V, P, R>, Error>>,
 }
 
 #[derive(Clone, Debug)]
@@ -358,7 +395,7 @@ struct Rejoin<T, V, P> {
     reference: Reference,
     topic: T,
     params: Option<serde_json::Value>,
-    rejoin_tx: UnboundedSender<RejoinToChannelMessage<T, V, P, serde_json::Value>>,
+    rejoin_tx: UnboundedSender<RejoinChannelMessage<T, V, P, serde_json::Value>>,
 }
 
 impl<T, V, P> Rejoin<T, V, P>
@@ -378,7 +415,10 @@ where
         let (message, rx) = WithCallback::new(message);
         let (res_tx, res_rx) = oneshot::channel();
 
-        let _ = self.rejoin_tx.send((message, res_tx));
+        let _ = self.rejoin_tx.send(RejoinChannelMessage {
+            message,
+            reply_callback: res_tx,
+        });
 
         let res = run_message::<T, V, P, serde_json::Value>(rx, res_rx, self.timeout).await?;
 

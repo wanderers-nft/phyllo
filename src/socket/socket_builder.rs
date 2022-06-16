@@ -1,23 +1,16 @@
-use super::{Reference, SocketHandler};
+use super::{HandlerSocketMessage, Reference, SocketHandler};
 use crate::{
-    channel::{ChannelStatus, SocketChannelMessage},
-    message::{Message, WithCallback},
+    channel::{ChannelSocketMessage, ChannelStatus, SocketChannelMessage},
+    message::Message,
 };
 use backoff::ExponentialBackoff;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{
-    collections::HashMap,
-    fmt::Debug,
-    hash::Hash,
-    sync::{atomic::AtomicBool, Arc},
-    time::Duration,
-};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc, time::Duration};
 use tokio::{
     net::TcpStream,
     select,
     sync::{
-        broadcast::{self, Receiver},
         mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
         Mutex,
     },
@@ -82,17 +75,19 @@ impl SocketBuilder {
     where
         T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
     {
-        // println!("{}", self.endpoint);
-
         // Send, receiver for client -> server
         let (out_tx, out_rx) = unbounded_channel();
 
+        // Send, receiver for handler -> socket
+        let (handler_tx, handler_rx) = unbounded_channel();
+
         let subscriptions = Arc::new(Mutex::new(HashMap::new()));
-        let (close_tx, _) = broadcast::channel(1);
         let reference = Reference::new();
 
         // Spawn task
         let socket: Socket<T> = Socket {
+            handler_rx,
+            out_tx,
             out_rx,
             subscriptions: subscriptions.clone(),
             reference: reference.clone(),
@@ -100,22 +95,22 @@ impl SocketBuilder {
             websocket_config: self.websocket_config,
             heartbeat: self.heartbeat,
             reconnect: self.reconnect.clone(),
-            close: close_tx.subscribe(),
         };
         tokio::spawn(socket.run());
 
         SocketHandler {
             reference,
-            out_tx,
-            subscriptions,
-            close: close_tx,
-            is_closed: Arc::new(AtomicBool::new(false)),
+            handler_tx,
         }
     }
 }
 
 struct Socket<T> {
-    out_rx: UnboundedReceiver<WithCallback<tungstenite::Message>>,
+    handler_rx: UnboundedReceiver<HandlerSocketMessage<T>>,
+
+    out_tx: UnboundedSender<ChannelSocketMessage<T>>,
+    out_rx: UnboundedReceiver<ChannelSocketMessage<T>>,
+
     subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage<T>>>>>,
 
     reference: Reference,
@@ -123,7 +118,6 @@ struct Socket<T> {
     websocket_config: Option<WebSocketConfig>,
     heartbeat: Duration,
     reconnect: ExponentialBackoff,
-    close: Receiver<()>,
 }
 
 impl<T> Socket<T>
@@ -160,24 +154,40 @@ where
 
             'conn: loop {
                 if let Err(tungstenite::Error::Io(_)) = select! {
-                    // Close signal
-                    _ = self.close.recv() => {
-                        let _ = sink.close().await;
-                        break 'retry;
-                    }
+                    Some(v) = self.handler_rx.recv() => {
+                        match v {
+                            HandlerSocketMessage::Close => {
+                                let _ = sink.close().await;
+                                break 'retry;
+                            },
+                            HandlerSocketMessage::Subscribe { topic, callback } => {
+                                let (in_tx, in_rx) = unbounded_channel();
+
+                                let mut subscriptions = self.subscriptions.lock().await;
+                                if subscriptions.contains_key(&topic) {
+                                    panic!("channel already exists");
+                                }
+                                subscriptions.insert(topic, in_tx);
+
+                                let _ = callback.send((in_rx, self.out_tx.clone()));
+
+                            },
+                        }
+                        Ok(())
+                    },
 
                     // Heartbeat
                     _ = interval.tick() => Socket::<T>::send_hearbeat(self.reference.next(), &mut sink).await,
 
-                    // Outbound message to be sent
-                    v = self.out_rx.recv() => Socket::<T>::on_outbound(&mut sink, v).await,
+                    // Incoming message from channels
+                    v = self.out_rx.recv() => self.from_channel(&mut sink, v).await,
 
-                    // Inbound message to be relayed
+                    // Incoming message from websocket
                     i = stream.next() => {
                         // If the stream is closed we can never receive any more messages. Break
                         match i {
                             Some(i) => {
-                                match self.on_inbound(i).await {
+                                match self.from_websocket(i).await {
                                     Ok(()) => Ok(()),
                                     Err(_) => break 'conn,
                                 }
@@ -207,30 +217,33 @@ where
             Message::<String, (), (), ()>::heartbeat(reference)
                 .try_into()
                 .unwrap();
-        // println!("Heartbeat: {:?}", &heartbeat_message);
 
         sink.send(heartbeat_message).await
     }
 
-    async fn on_outbound(
+    async fn from_channel(
+        &mut self,
         sink: &mut Sink,
-        message: Option<WithCallback<tungstenite::Message>>,
+        message: Option<ChannelSocketMessage<T>>,
     ) -> Result<(), tungstenite::Error> {
-        // println!("Outbound: {:?}", &message);
-        // Check if channel is closed
-        if let Some(message_res) = message {
-            let _ = message_res
-                .callback
-                .send(sink.feed(message_res.content).await);
+        if let Some(message) = message {
+            match message {
+                ChannelSocketMessage::Message(message) => {
+                    let _ = message.callback.send(sink.feed(message.content).await);
+                }
+                ChannelSocketMessage::TaskEnded(topic) => {
+                    let mut subscription = self.subscriptions.lock().await;
+                    subscription.remove(&topic);
+                }
+            }
         }
         Ok(())
     }
 
-    async fn on_inbound(
+    async fn from_websocket(
         &mut self,
         message: Result<tungstenite::Message, tungstenite::Error>,
     ) -> Result<(), tungstenite::Error> {
-        // println!("Inbound: {:?}", &message);
         match message {
             Ok(tungstenite::Message::Text(t)) => {
                 let _ = self.decode_and_relay(t).await;

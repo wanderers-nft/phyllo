@@ -233,22 +233,22 @@ impl<T> WithCallback<T> {
         )
     }
 
-    pub(crate) fn map<U>(self) -> WithCallback<U>
+    pub(crate) fn map<U, F>(self, f: F) -> WithCallback<U>
     where
-        T: Into<U>,
+        F: FnOnce(T) -> U,
     {
         WithCallback {
-            content: self.content.into(),
+            content: f(self.content),
             callback: self.callback,
         }
     }
 
-    pub(crate) fn try_map<U>(self) -> Result<WithCallback<U>, T::Error>
+    pub(crate) fn try_map<U, F, E>(self, f: F) -> Result<WithCallback<U>, E>
     where
-        T: TryInto<U>,
+        F: FnOnce(T) -> Result<U, E>,
     {
-        self.content.try_into().map(|v| WithCallback {
-            content: v,
+        Ok(WithCallback {
+            content: f(self.content)?,
             callback: self.callback,
         })
     }

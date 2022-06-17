@@ -216,6 +216,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct WithCallback<T> {
     pub(crate) content: T,
     pub(crate) callback: oneshot::Sender<Result<(), tungstenite::Error>>,

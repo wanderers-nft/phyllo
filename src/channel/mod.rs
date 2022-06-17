@@ -156,6 +156,7 @@ pub(crate) enum SocketChannelMessage<T> {
     ChannelStatus(ChannelStatus),
 }
 
+#[derive(Debug)]
 pub(crate) enum ChannelSocketMessage<T> {
     Message(WithCallback<tungstenite::Message>),
     TaskEnded(T),

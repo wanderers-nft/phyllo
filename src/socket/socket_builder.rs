@@ -27,7 +27,8 @@ type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::M
 // type Stream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 type TungsteniteWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-pub enum OnDisconnect {
+#[derive(Clone, Copy)]
+pub enum OnIoError {
     Die,
     Retry,
 }
@@ -38,6 +39,7 @@ pub struct SocketBuilder {
     websocket_config: Option<WebSocketConfig>,
     heartbeat: Duration,
     reconnect: ExponentialBackoff,
+    on_io_error: OnIoError,
 }
 
 impl SocketBuilder {
@@ -49,6 +51,7 @@ impl SocketBuilder {
             websocket_config: None,
             heartbeat: Duration::from_millis(30000),
             reconnect: ExponentialBackoff::default(),
+            on_io_error: OnIoError::Retry,
         }
     }
 
@@ -69,6 +72,10 @@ impl SocketBuilder {
 
     pub fn reconnect(&mut self, reconnect: ExponentialBackoff) {
         self.reconnect = reconnect;
+    }
+
+    pub fn on_io_error(&mut self, on_io_error: OnIoError) {
+        self.on_io_error = on_io_error;
     }
 
     pub async fn build<T>(&self) -> SocketHandler<T>
@@ -95,6 +102,7 @@ impl SocketBuilder {
             websocket_config: self.websocket_config,
             heartbeat: self.heartbeat,
             reconnect: self.reconnect.clone(),
+            on_io_error: self.on_io_error,
         };
         tokio::spawn(socket.run());
 
@@ -118,6 +126,7 @@ struct Socket<T> {
     websocket_config: Option<WebSocketConfig>,
     heartbeat: Duration,
     reconnect: ExponentialBackoff,
+    on_io_error: OnIoError,
 }
 
 impl<T> Socket<T>
@@ -180,7 +189,7 @@ where
                     _ = interval.tick() => Socket::<T>::send_hearbeat(self.reference.next(), &mut sink).await,
 
                     // Incoming message from channels
-                    v = self.out_rx.recv() => self.from_channel(&mut sink, v).await,
+                    Some(v) = self.out_rx.recv() => self.from_channel(&mut sink, v).await,
 
                     // Incoming message from websocket
                     i = stream.next() => {
@@ -196,7 +205,14 @@ where
                         }
                     },
                 } {
-                    break 'conn;
+                    match self.on_io_error {
+                        OnIoError::Die => {
+                            break 'retry;
+                        }
+                        OnIoError::Retry => {
+                            break 'conn;
+                        }
+                    }
                 };
             }
         }
@@ -217,24 +233,21 @@ where
             Message::<String, (), (), ()>::heartbeat(reference)
                 .try_into()
                 .unwrap();
-
         sink.send(heartbeat_message).await
     }
 
     async fn from_channel(
         &mut self,
         sink: &mut Sink,
-        message: Option<ChannelSocketMessage<T>>,
+        message: ChannelSocketMessage<T>,
     ) -> Result<(), tungstenite::Error> {
-        if let Some(message) = message {
-            match message {
-                ChannelSocketMessage::Message(message) => {
-                    let _ = message.callback.send(sink.feed(message.content).await);
-                }
-                ChannelSocketMessage::TaskEnded(topic) => {
-                    let mut subscription = self.subscriptions.lock().await;
-                    subscription.remove(&topic);
-                }
+        match message {
+            ChannelSocketMessage::Message(message) => {
+                let _ = message.callback.send(sink.send(message.content).await);
+            }
+            ChannelSocketMessage::TaskEnded(topic) => {
+                let mut subscription = self.subscriptions.lock().await;
+                subscription.remove(&topic);
             }
         }
         Ok(())

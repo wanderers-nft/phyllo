@@ -23,7 +23,7 @@ pub struct SocketHandler<T> {
 
 impl<T> SocketHandler<T>
 where
-    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
+    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug + Sync,
 {
     pub async fn new(endpoint: Url) -> Self {
         Self::builder(endpoint).build().await

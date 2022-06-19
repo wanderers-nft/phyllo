@@ -6,14 +6,11 @@ use crate::{
 use backoff::ExponentialBackoff;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
-use std::{collections::HashMap, fmt::Debug, hash::Hash, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::Debug, hash::Hash, time::Duration};
 use tokio::{
     net::TcpStream,
     select,
-    sync::{
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-        Mutex,
-    },
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     time,
 };
 use tokio_tungstenite::{
@@ -81,7 +78,7 @@ impl SocketBuilder {
 
     pub async fn build<T>(&self) -> SocketHandler<T>
     where
-        T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
+        T: Serialize + DeserializeOwned + Eq + Hash + Send + Sync + 'static + Debug,
     {
         // Send, receiver for client -> server
         let (out_tx, out_rx) = unbounded_channel();
@@ -89,7 +86,7 @@ impl SocketBuilder {
         // Send, receiver for handler -> socket
         let (handler_tx, handler_rx) = unbounded_channel();
 
-        let subscriptions = Arc::new(Mutex::new(HashMap::new()));
+        let subscriptions = HashMap::new();
         let reference = Reference::new();
 
         // Spawn task
@@ -97,7 +94,7 @@ impl SocketBuilder {
             handler_rx,
             out_tx,
             out_rx,
-            subscriptions: subscriptions.clone(),
+            subscriptions,
             reference: reference.clone(),
             endpoint: self.endpoint.clone(),
             websocket_config: self.websocket_config,
@@ -120,7 +117,7 @@ struct Socket<T> {
     out_tx: UnboundedSender<ChannelSocketMessage<T>>,
     out_rx: UnboundedReceiver<ChannelSocketMessage<T>>,
 
-    subscriptions: Arc<Mutex<HashMap<T, UnboundedSender<SocketChannelMessage<T>>>>>,
+    subscriptions: HashMap<T, UnboundedSender<SocketChannelMessage<T>>>,
 
     reference: Reference,
     endpoint: Url,
@@ -152,8 +149,7 @@ where
         'retry: loop {
             // TODO: Lock all channels
             {
-                let mut subscriptions = self.subscriptions.lock().await;
-                for (_, chan) in subscriptions.iter_mut() {
+                for (_, chan) in self.subscriptions.iter_mut() {
                     let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Rejoin));
                 }
             }
@@ -174,11 +170,10 @@ where
                             HandlerSocketMessage::Subscribe { topic, callback } => {
                                 let (in_tx, in_rx) = unbounded_channel();
 
-                                let mut subscriptions = self.subscriptions.lock().await;
-                                if subscriptions.contains_key(&topic) {
+                                if self.subscriptions.contains_key(&topic) {
                                     panic!("channel already exists");
                                 }
-                                subscriptions.insert(topic, in_tx);
+                                self.subscriptions.insert(topic, in_tx);
 
                                 let _ = callback.send((in_rx, self.out_tx.clone()));
 
@@ -220,8 +215,7 @@ where
         }
 
         // Send close signal to all subscriptions
-        let mut subscriptions = self.subscriptions.lock().await;
-        for (topic, chan) in subscriptions.iter_mut() {
+        for (topic, chan) in self.subscriptions.iter_mut() {
             info!(?topic, "close signal");
             let _ = chan.send(SocketChannelMessage::ChannelStatus(
                 ChannelStatus::SocketClosed,
@@ -254,8 +248,7 @@ where
             }
             ChannelSocketMessage::TaskEnded(topic) => {
                 info!(?topic, "removing task");
-                let mut subscription = self.subscriptions.lock().await;
-                subscription.remove(&topic);
+                self.subscriptions.remove(&topic);
             }
         }
         Ok(())
@@ -285,8 +278,7 @@ where
         // To determine which topic we should relay the raw tungstenite mesage to, we "ignore" V, P but deserialise for T.
         let message = serde_json::from_str::<Message<T, Value, Value, Value>>(&text)?;
 
-        let subscriptions = self.subscriptions.lock().await;
-        if let Some(chan) = subscriptions.get(&message.topic) {
+        if let Some(chan) = self.subscriptions.get(&message.topic) {
             // TODO: handle this error
             let _ = chan.send(SocketChannelMessage::Message(message));
         }

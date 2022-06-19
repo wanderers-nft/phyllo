@@ -133,8 +133,8 @@ where
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ChannelStatus {
-    // Channel has just been created and has not attempted a connection before.
-    Created,
+    // Channel is closed, and should be rejoined.
+    Rejoin,
     // Channel has been closed by the server.
     Closed,
     // Channel has recieved an error from the server.
@@ -147,10 +147,11 @@ pub enum ChannelStatus {
 
 impl ChannelStatus {
     pub fn should_rejoin(self) -> bool {
-        self == Self::Created || self == Self::Errored
+        self == Self::Rejoin || self == Self::Errored
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum SocketChannelMessage<T> {
     Message(Message<T, Value, Value, Value>),
     ChannelStatus(ChannelStatus),

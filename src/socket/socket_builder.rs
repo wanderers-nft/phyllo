@@ -21,6 +21,7 @@ use tokio_tungstenite::{
     tungstenite::{self, protocol::WebSocketConfig},
     MaybeTlsStream, WebSocketStream,
 };
+use tracing::{error, info};
 use url::Url;
 
 type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>;
@@ -153,13 +154,14 @@ where
             {
                 let mut subscriptions = self.subscriptions.lock().await;
                 for (_, chan) in subscriptions.iter_mut() {
-                    let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Closed));
+                    let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Rejoin));
                 }
             }
             self.reference.reset();
 
             // Connect to socket
             let (mut sink, mut stream) = self.connect_with_backoff().await.map(|ws| ws.split())?;
+            info!("connected to websocket: {:?}", self.endpoint);
 
             'conn: loop {
                 if let Err(tungstenite::Error::Io(_)) = select! {
@@ -219,7 +221,8 @@ where
 
         // Send close signal to all subscriptions
         let mut subscriptions = self.subscriptions.lock().await;
-        for (_, chan) in subscriptions.iter_mut() {
+        for (topic, chan) in subscriptions.iter_mut() {
+            info!(?topic, "close signal");
             let _ = chan.send(SocketChannelMessage::ChannelStatus(
                 ChannelStatus::SocketClosed,
             ));
@@ -233,6 +236,9 @@ where
             Message::<String, (), (), ()>::heartbeat(reference)
                 .try_into()
                 .unwrap();
+
+        info!(%heartbeat_message, "to websocket");
+
         sink.send(heartbeat_message).await
     }
 
@@ -243,9 +249,11 @@ where
     ) -> Result<(), tungstenite::Error> {
         match message {
             ChannelSocketMessage::Message(message) => {
+                info!(%message.content, "to websocket");
                 let _ = message.callback.send(sink.send(message.content).await);
             }
             ChannelSocketMessage::TaskEnded(topic) => {
+                info!(?topic, "removing task");
                 let mut subscription = self.subscriptions.lock().await;
                 subscription.remove(&topic);
             }
@@ -259,10 +267,14 @@ where
     ) -> Result<(), tungstenite::Error> {
         match message {
             Ok(tungstenite::Message::Text(t)) => {
+                info!(%t, "from websocket");
                 let _ = self.decode_and_relay(t).await;
                 Ok(())
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                error!(%e, "from websocket");
+                Err(e)
+            }
             _ => Ok(()),
         }
     }

@@ -4,6 +4,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::{
     collections::{hash_map::Entry, HashMap},
+    fmt::Debug,
     time::Duration,
 };
 use tokio::{
@@ -14,6 +15,7 @@ use tokio::{
         oneshot,
     },
 };
+use tracing::info;
 
 use crate::{
     error::{ChannelJoinError, Error},
@@ -97,7 +99,7 @@ where
         in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
     ) -> ChannelHandler<T, V, P, R>
     where
-        T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static,
+        T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static + Debug,
         V: Serialize + DeserializeOwned + Send + Clone + 'static,
         P: Serialize + DeserializeOwned + Send + Clone + 'static,
         R: Serialize + DeserializeOwned + Send + Clone + 'static,
@@ -109,7 +111,7 @@ where
         let (handler_internal_tx, handler_internal_rx) = unbounded_channel();
 
         let channel: Channel<T, V, P, R> = Channel {
-            status: ChannelStatus::Created,
+            status: ChannelStatus::Rejoin,
             topic: self.topic.clone(),
             rejoin_timeout: self.rejoin_timeout,
             rejoin_after: self.rejoin.clone(),
@@ -171,7 +173,7 @@ struct Channel<T, V, P, R> {
 
 impl<T, V, P, R> Channel<T, V, P, R>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + Debug,
     V: Serialize + DeserializeOwned,
     P: Serialize + DeserializeOwned,
     R: Serialize + DeserializeOwned,
@@ -182,12 +184,15 @@ where
         message: Result<Message<T, Value, Value, Value>, Error>,
     ) {
         if let Some(reply) = self.replies.remove(&reference) {
+            info!(?message, "sending reply");
             // todo: handle this error
             let _ = reply.send(message);
         }
     }
 
     async fn inbound(&mut self, message: SocketChannelMessage<T>) -> Result<(), serde_json::Error> {
+        info!(?message, "from socket");
+
         match message {
             SocketChannelMessage::Message(msg) => {
                 match (&msg.event, &msg.payload) {
@@ -297,14 +302,14 @@ where
 
     pub(crate) async fn run(mut self)
     where
-        T: Clone + Send + Sync + 'static,
+        T: Clone + Send + Sync + 'static + Debug,
         V: Send + 'static,
         P: Send + 'static,
         R: Send + 'static,
     {
         'retry: loop {
             let mut rejoin: OptionFuture<_> = match self.status {
-                ChannelStatus::Errored | ChannelStatus::Created => {
+                ChannelStatus::Errored | ChannelStatus::Rejoin => {
                     let rejoiner = Rejoin {
                         rejoin_after: self.rejoin_after.clone(),
                         timeout: self.rejoin_timeout,
@@ -352,6 +357,7 @@ where
                     Some(v) = &mut rejoin, if self.status.should_rejoin() => {
                         match v {
                             Ok(Ok(new_join_ref)) => {
+                                info!("rejoiner task complete");
                                 self.status = ChannelStatus::Joined;
                                 self.join_ref = new_join_ref;
                             },
@@ -367,14 +373,16 @@ where
                 match self.status {
                     // Closed: this channel task needs to be destroyed
                     ChannelStatus::Closed | ChannelStatus::SocketClosed => {
+                        info!(?self.topic, "destroying channel");
                         break 'retry;
                     }
                     // We can still reconnect
                     ChannelStatus::Errored => {
+                        info!(?self.topic, "errored");
                         break 'inner;
                     }
                     _ => {}
-                };
+                }
             }
         }
         let _ = self
@@ -400,7 +408,7 @@ struct Rejoin<T, V, P> {
 
 impl<T, V, P> Rejoin<T, V, P>
 where
-    T: Serialize + Clone + Send,
+    T: Serialize + Clone + Send + Debug,
     V: Serialize,
     P: Serialize,
 {
@@ -433,6 +441,7 @@ where
 
     async fn join_with_backoff(self) -> Result<u64, ChannelJoinError<P>> {
         backoff::future::retry(self.rejoin_after.clone(), || async {
+            info!(?self.topic, "attempting reconnection");
             Ok(self.join().await?)
         })
         .await

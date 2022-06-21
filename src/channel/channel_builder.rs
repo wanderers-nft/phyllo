@@ -125,7 +125,7 @@ where
             handler_internal_rx,
             out_tx,
             in_rx,
-            broadcast: broadcast_tx.clone(),
+            broadcast: broadcast_tx,
         };
 
         tokio::spawn(channel.run());
@@ -224,8 +224,8 @@ where
                             payload: msg
                                 .payload
                                 .map(|p| {
-                                    Ok(p.try_map_push_reply(serde_json::from_value)?
-                                        .try_map_custom(serde_json::from_value)?)
+                                    p.try_map_push_reply(serde_json::from_value)?
+                                        .try_map_custom(serde_json::from_value)
                                 })
                                 .transpose()?,
                         };

@@ -88,13 +88,15 @@ impl Default for Reference {
     }
 }
 
+type HandlerSocketMessageCallback<T> = oneshot::Sender<(
+    UnboundedReceiver<SocketChannelMessage<T>>,
+    UnboundedSender<ChannelSocketMessage<T>>,
+)>;
+
 enum HandlerSocketMessage<T> {
     Close,
     Subscribe {
         topic: T,
-        callback: oneshot::Sender<(
-            UnboundedReceiver<SocketChannelMessage<T>>,
-            UnboundedSender<ChannelSocketMessage<T>>,
-        )>,
+        callback: HandlerSocketMessageCallback<T>,
     },
 }

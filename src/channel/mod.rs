@@ -72,10 +72,8 @@ where
             payload: res
                 .payload
                 .map(|p| {
-                    Ok::<_, serde_json::Error>(
-                        p.try_map_push_reply(serde_json::from_value)?
-                            .try_map_custom(serde_json::from_value)?,
-                    )
+                    p.try_map_push_reply(serde_json::from_value)?
+                        .try_map_custom(serde_json::from_value)
                 })
                 .transpose()?,
         })
@@ -120,10 +118,8 @@ where
             payload: res
                 .payload
                 .map(|p| {
-                    Ok::<_, serde_json::Error>(
-                        p.try_map_push_reply(serde_json::from_value)?
-                            .try_map_custom(serde_json::from_value)?,
-                    )
+                    p.try_map_push_reply(serde_json::from_value)?
+                        .try_map_custom(serde_json::from_value)
                 })
                 .transpose()?,
         })

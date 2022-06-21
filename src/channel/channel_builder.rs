@@ -396,8 +396,8 @@ where
                         break 'retry;
                     }
                     // We can still reconnect
-                    ChannelStatus::Errored => {
-                        info!(?self.topic, "errored");
+                    ChannelStatus::Errored | ChannelStatus::Rejoin => {
+                        info!(?self.topic, "will attempt rejoin");
                         break 'inner;
                     }
                     _ => {}

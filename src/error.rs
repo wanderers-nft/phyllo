@@ -11,6 +11,8 @@ pub enum Error {
     WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("message reply timeout")]
     Timeout,
+    #[error("underlying socket dropped")]
+    SocketDropped,
 }
 
 #[derive(Debug, Error)]

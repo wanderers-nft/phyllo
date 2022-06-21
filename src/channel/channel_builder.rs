@@ -11,11 +11,11 @@ use tokio::{
     select,
     sync::{
         broadcast,
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+        mpsc::{error::SendError, unbounded_channel, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
 };
-use tracing::info;
+use tracing::{info, instrument, warn};
 
 use crate::{
     error::{ChannelJoinError, Error},
@@ -100,9 +100,9 @@ where
     ) -> ChannelHandler<T, V, P, R>
     where
         T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static + Debug,
-        V: Serialize + DeserializeOwned + Send + Clone + 'static,
-        P: Serialize + DeserializeOwned + Send + Clone + 'static,
-        R: Serialize + DeserializeOwned + Send + Clone + 'static,
+        V: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
+        P: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
+        R: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
     {
         let (handler_tx, handler_rx) = unbounded_channel();
         let (broadcast_tx, _) = broadcast::channel(self.broadcast_buffer);
@@ -174,9 +174,9 @@ struct Channel<T, V, P, R> {
 impl<T, V, P, R> Channel<T, V, P, R>
 where
     T: Serialize + DeserializeOwned + Debug,
-    V: Serialize + DeserializeOwned,
-    P: Serialize + DeserializeOwned,
-    R: Serialize + DeserializeOwned,
+    V: Serialize + DeserializeOwned + Debug,
+    P: Serialize + DeserializeOwned + Debug,
+    R: Serialize + DeserializeOwned + Debug,
 {
     fn send_reply(
         &mut self,
@@ -184,17 +184,18 @@ where
         message: Result<Message<T, Value, Value, Value>, Error>,
     ) {
         if let Some(reply) = self.replies.remove(&reference) {
-            info!(?message, "sending reply");
-            // todo: handle this error
-            let _ = reply.send(message);
+            if let Err(e) = reply.send(message) {
+                warn!(error = ?e, "reply send failed");
+            }
         }
     }
 
+    #[instrument(skip_all, fields(topic = ?self.topic))]
     async fn inbound(&mut self, message: SocketChannelMessage<T>) -> Result<(), serde_json::Error> {
-        info!(?message, "from socket");
-
         match message {
             SocketChannelMessage::Message(msg) => {
+                info!(message = ?msg, "incoming");
+
                 match (&msg.event, &msg.payload) {
                     // On close, do not attempt re-connection
                     (Event::Protocol(ProtocolEvent::Close), _) => {
@@ -215,7 +216,6 @@ where
 
                     // On new message
                     (Event::Event(_), Some(Payload::Custom(_))) => {
-                        // TODO: Handle this error
                         let msg = Message {
                             join_ref: msg.join_ref,
                             reference: msg.reference,
@@ -229,12 +229,18 @@ where
                                 })
                                 .transpose()?,
                         };
-                        let _ = self.broadcast.send(msg);
+                        let res = self.broadcast.send(msg);
+                        if let Err(e) = res {
+                            warn!(error = ?e, "broadcast failed");
+                        }
                     }
+
+                    // Heartbeat, Join, Leave messages cannot be received.
                     _ => {}
                 };
             }
             SocketChannelMessage::ChannelStatus(cs) => {
+                info!(status = ?cs, "updating status");
                 self.status = cs;
             }
         };
@@ -247,7 +253,8 @@ where
             message,
             reply_callback,
         }: HandlerChannelMessage<T>,
-    ) where
+    ) -> Result<(), SendError<ChannelSocketMessage<T>>>
+    where
         T: Clone,
     {
         let message = message.map(|(e, p)| {
@@ -263,15 +270,29 @@ where
         self.outbound_inner(message, reply_callback)
     }
 
+    fn outbound_leave(
+        &mut self,
+        message: WithCallback<()>,
+        reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
+    ) -> Result<(), SendError<ChannelSocketMessage<T>>>
+    where
+        T: Clone,
+    {
+        let message = message.map(|_| Message::leave(self.topic.clone(), self.reference.next()));
+        self.outbound_inner(message, reply_callback)
+    }
+
+    #[instrument(name = "outbound", skip(self), fields(topic = ?self.topic, message = ?message.content))]
     fn outbound_inner(
         &mut self,
         message: WithCallback<Message<T, Value, Value, Value>>,
         reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
-    ) {
+    ) -> Result<(), SendError<ChannelSocketMessage<T>>> {
         let reference = message.content.reference.unwrap();
         match self.replies.entry(reference) {
-            Entry::Occupied(_) => {
-                panic!("reference already used, wtf")
+            Entry::Occupied(mut e) => {
+                warn!(kv = ?e, "reference already used");
+                e.insert(reply_callback);
             }
             Entry::Vacant(e) => {
                 e.insert(reply_callback);
@@ -281,23 +302,18 @@ where
         let message = match message.try_map(TryInto::try_into) {
             Ok(v) => v,
             Err(e) => {
+                warn!(value = ?e, "message could not be serialized");
                 self.send_reply(reference, Err(Error::Serde(e)));
-                return;
+                return Ok(());
             }
         };
 
-        let _ = self.out_tx.send(ChannelSocketMessage::Message(message));
-    }
-
-    fn outbound_leave(
-        &mut self,
-        message: WithCallback<()>,
-        reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
-    ) where
-        T: Clone,
-    {
-        let message = message.map(|_| Message::leave(self.topic.clone(), self.reference.next()));
-        self.outbound_inner(message, reply_callback);
+        self.out_tx
+            .send(ChannelSocketMessage::Message(message))
+            .map_err(|e| {
+                warn!(error = ?e, "failed to send to socket");
+                e
+            })
     }
 
     pub(crate) async fn run(mut self)
@@ -328,7 +344,7 @@ where
                     Some(v) = self.handler_internal_rx.recv() => {
                         match v {
                             HandlerChannelInternalMessage::Leave { callback, reply_callback } => {
-                                self.outbound_leave(callback, reply_callback);
+                                let _ = self.outbound_leave(callback, reply_callback);
                             },
                             HandlerChannelInternalMessage::Broadcast { callback } => {
                                 let _ = callback.send(self.broadcast.subscribe());
@@ -357,10 +373,13 @@ where
                     Some(v) = &mut rejoin, if self.status.should_rejoin() => {
                         match v {
                             Ok(Ok(new_join_ref)) => {
-                                info!("rejoiner task complete");
                                 self.status = ChannelStatus::Joined;
                                 self.join_ref = new_join_ref;
                             },
+                            // If socket is dropped, this task should be destroyed
+                            Ok(Err(ChannelJoinError::Error(Error::SocketDropped))) => {
+                                self.status = ChannelStatus::SocketClosed;
+                            }
                             _ => {
                                 break 'inner;
                             }
@@ -410,9 +429,9 @@ impl<T, V, P> Rejoin<T, V, P>
 where
     T: Serialize + Clone + Send + Debug,
     V: Serialize,
-    P: Serialize,
+    P: Serialize + Debug,
 {
-    async fn join(&self) -> Result<u64, ChannelJoinError<P>> {
+    async fn join(&self) -> Result<u64, backoff::Error<ChannelJoinError<P>>> {
         let join_ref = self.reference.next();
         let message = Message::<T, V, P, serde_json::Value>::join(
             join_ref,
@@ -423,26 +442,44 @@ where
         let (message, rx) = WithCallback::new(message);
         let (res_tx, res_rx) = oneshot::channel();
 
-        let _ = self.rejoin_tx.send(RejoinChannelMessage {
-            message,
-            reply_callback: res_tx,
-        });
+        self.rejoin_tx
+            .send(RejoinChannelMessage {
+                message,
+                reply_callback: res_tx,
+            })
+            .map_err(|_| {
+                warn!("socket dropped");
+                backoff::Error::Permanent(ChannelJoinError::Error(Error::SocketDropped))
+            })?;
 
-        let res = run_message::<T, V, P, serde_json::Value>(rx, res_rx, self.timeout).await?;
+        let res = run_message::<T, V, P, serde_json::Value>(rx, res_rx, self.timeout)
+            .await
+            .map_err(|e| match e {
+                // Never re-attempt a dropped socket
+                Error::SocketDropped => {
+                    warn!("socket dropped");
+                    backoff::Error::Permanent(ChannelJoinError::Error(Error::SocketDropped))
+                }
+                _ => backoff::Error::transient(ChannelJoinError::Error(e)),
+            })?;
 
         match res.payload {
             Some(Payload::PushReply {
                 status: PushStatus::Error,
                 response: p,
-            }) => Err(ChannelJoinError::Join(p)),
+            }) => Err(ChannelJoinError::Join(p))?,
             _ => Ok(join_ref),
         }
     }
 
+    #[instrument(skip(self), fields(topic = ?self.topic))]
     async fn join_with_backoff(self) -> Result<u64, ChannelJoinError<P>> {
         backoff::future::retry(self.rejoin_after.clone(), || async {
-            info!(?self.topic, "attempting reconnection");
-            Ok(self.join().await?)
+            info!("attempting rejoin");
+            self.join().await.map_err(|e| {
+                warn!(error = ?e);
+                e
+            })
         })
         .await
     }

@@ -18,7 +18,7 @@ use tokio_tungstenite::{
     tungstenite::{self, protocol::WebSocketConfig},
     MaybeTlsStream, WebSocketStream,
 };
-use tracing::{error, info};
+use tracing::{info, instrument, warn};
 use url::Url;
 
 type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::Message>;
@@ -131,6 +131,7 @@ impl<T> Socket<T>
 where
     T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
 {
+    #[instrument(skip(self), fields(endpoint = %self.endpoint))]
     async fn connect_with_backoff(&self) -> Result<TungsteniteWebSocketStream, tungstenite::Error> {
         backoff::future::retry(self.reconnect.clone(), || async {
             Ok(connect_async_with_config(self.endpoint.clone(), self.websocket_config).await?)
@@ -157,7 +158,7 @@ where
 
             // Connect to socket
             let (mut sink, mut stream) = self.connect_with_backoff().await.map(|ws| ws.split())?;
-            info!("connected to websocket: {:?}", self.endpoint);
+            info!("connected to websocket {}", self.endpoint);
 
             'conn: loop {
                 if let Err(tungstenite::Error::Io(_)) = select! {
@@ -225,17 +226,19 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn send_hearbeat(reference: u64, sink: &mut Sink) -> Result<(), tungstenite::Error> {
         let heartbeat_message: tungstenite::Message =
             Message::<String, (), (), ()>::heartbeat(reference)
                 .try_into()
                 .unwrap();
 
-        info!(%heartbeat_message, "to websocket");
+        info!(message = %heartbeat_message);
 
         sink.send(heartbeat_message).await
     }
 
+    #[instrument(skip_all, fields(endpoint = %self.endpoint))]
     async fn from_channel(
         &mut self,
         sink: &mut Sink,
@@ -254,18 +257,19 @@ where
         Ok(())
     }
 
+    #[instrument(skip_all, fields(endpoint = %self.endpoint))]
     async fn from_websocket(
         &mut self,
         message: Result<tungstenite::Message, tungstenite::Error>,
     ) -> Result<(), tungstenite::Error> {
         match message {
             Ok(tungstenite::Message::Text(t)) => {
-                info!(%t, "from websocket");
+                info!(message = %t, "incoming");
                 let _ = self.decode_and_relay(t).await;
                 Ok(())
             }
             Err(e) => {
-                error!(%e, "from websocket");
+                warn!(error = ?e, "error received");
                 Err(e)
             }
             _ => Ok(()),
@@ -279,8 +283,9 @@ where
         let message = serde_json::from_str::<Message<T, Value, Value, Value>>(&text)?;
 
         if let Some(chan) = self.subscriptions.get(&message.topic) {
-            // TODO: handle this error
-            let _ = chan.send(SocketChannelMessage::Message(message));
+            if let Err(e) = chan.send(SocketChannelMessage::Message(message)) {
+                warn!(error = ?e, "failed to send message to channel");
+            }
         }
         Ok(())
     }

@@ -4,6 +4,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{select, sync::oneshot};
 use tokio_tungstenite::tungstenite;
+use tracing::warn;
 
 use crate::error::Error;
 
@@ -272,35 +273,31 @@ where
     // Await the send callback
     select! {
         _ = &mut timeout => {
-            return Err(Error::Timeout);
+            warn!("timeout on send callback");
+            Err(Error::Timeout)
         },
 
-        Err(e) = &mut receive_callback => {
-            panic!("todo: handle error on transmission");
-        },
+        Err(_) = &mut receive_callback => Err(Error::SocketDropped),
 
         v = send_callback => {
             match v {
-                // todo: how tf do you handle this
-                Err(e) => todo!(),
-                Ok(Err(e)) => {
-                    return Err(Error::WebSocket(e));
-                },
-                _ => {}
-            };
+                Err(_) => Err(Error::SocketDropped),
+                Ok(Err(e)) => Err(Error::WebSocket(e)),
+                _ => Ok(())
+            }
         }
-    };
+    }?;
 
     // Await the receive callback
     select! {
         _ = &mut timeout => {
-            return Err(Error::Timeout);
+            Err(Error::Timeout)
         }
 
         v = receive_callback => {
             match v {
                 // todo: how tf do you handle this
-                Err(e) => todo!(),
+                Err(_) => Err(Error::SocketDropped),
                 Ok(v) => v,
             }
         }

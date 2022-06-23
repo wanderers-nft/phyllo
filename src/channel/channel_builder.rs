@@ -138,6 +138,7 @@ where
             out_tx,
             in_rx,
             broadcast: broadcast_tx,
+            rejoin_inflight: false,
         };
 
         tokio::spawn(channel.run());
@@ -186,6 +187,8 @@ struct Channel<T, V, P, R> {
 
     // Broadcaster for non-reply messages
     broadcast: broadcast::Sender<Message<T, V, P, R>>,
+
+    rejoin_inflight: bool,
 }
 
 impl<T, V, P, R> Channel<T, V, P, R>
@@ -348,7 +351,8 @@ where
     {
         'retry: loop {
             let mut rejoin: OptionFuture<_> = match self.status {
-                ChannelStatus::Errored | ChannelStatus::Rejoin => {
+                ChannelStatus::Errored | ChannelStatus::Rejoin if !self.rejoin_inflight => {
+                    self.rejoin_inflight = true;
                     let rejoiner = Rejoin {
                         rejoin_after: self.rejoin_after.clone(),
                         timeout: self.rejoin_timeout,
@@ -359,7 +363,10 @@ where
                     };
                     Some(tokio::spawn(rejoiner.join_with_backoff())).into()
                 }
-                _ => None.into(),
+                _ => {
+                    self.rejoin_inflight = false;
+                    None.into()
+                },
             };
 
             'inner: loop {
@@ -393,7 +400,8 @@ where
                     // When rejoiner task is complete.
                     // Note that on a successful rejoin, the channel status is set to Joined, which means that it is
                     // impossible for the rejoin to be polled twice.
-                    Some(v) = &mut rejoin, if self.status.should_rejoin() => {
+                    Some(v) = &mut rejoin, if self.rejoin_inflight => {
+                        self.rejoin_inflight = false;
                         match v {
                             Ok(Ok(new_join_ref)) => {
                                 self.status = ChannelStatus::Joined;
@@ -419,7 +427,7 @@ where
                         break 'retry;
                     }
                     // We can still reconnect
-                    ChannelStatus::Errored | ChannelStatus::Rejoin => {
+                    ChannelStatus::Errored | ChannelStatus::Rejoin if !self.rejoin_inflight => {
                         info!(?self.topic, "will attempt rejoin");
                         break 'inner;
                     }

@@ -31,6 +31,7 @@ use super::{
     HandlerChannelMessage, SocketChannelMessage,
 };
 
+/// Builder for a channel
 #[derive(Debug, Clone)]
 pub struct ChannelBuilder<T> {
     pub(crate) topic: T,
@@ -45,6 +46,7 @@ impl<T> ChannelBuilder<T>
 where
     T: Serialize,
 {
+    /// Constructs a new `ChannelBuilder`. `topic` is the topic used for messages sent/received through this channel.
     pub fn new(topic: T) -> Self {
         Self {
             topic,
@@ -56,22 +58,29 @@ where
         }
     }
 
+    /// Sets the topic used for messages sent/recieved through this channel.
     pub fn topic(&mut self, topic: T) {
         self.topic = topic;
     }
 
+    /// Sets the timeout duration for messages sent/received through this channel (excluding rejoin messages).
     pub fn timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
 
+    /// Sets the timeout duration for rejoin messages sent by this channel.
     pub fn rejoin_timeout(&mut self, rejoin_timeout: Duration) {
         self.rejoin_timeout = rejoin_timeout;
     }
 
+    /// Sets the strategy for attempting rejoining using exponential backoff.
     pub fn rejoin(&mut self, rejoin_after: ExponentialBackoff) {
         self.rejoin = rejoin_after;
     }
 
+    /// Sets the param to be sent during joining.
+    /// # Panics
+    /// This function will panic if `params` cannot be successfully serialized.
     pub fn params<U>(&mut self, params: Option<U>)
     where
         U: Serialize,
@@ -80,6 +89,7 @@ where
             .expect("could not serialize parameter");
     }
 
+    /// Sets the param to be sent during joining.
     pub fn try_params<U>(&mut self, params: Option<U>) -> Result<(), serde_json::Error>
     where
         U: Serialize,
@@ -88,10 +98,12 @@ where
         Ok(())
     }
 
+    /// Sets the size of the broadcast buffer.
     pub fn broadcast_buffer(&mut self, broadcast_buffer: usize) {
         self.broadcast_buffer = broadcast_buffer;
     }
 
+    /// Spawns the `Channel` and returns a corresponding `ChannelHandler`.
     pub(crate) fn build<V, P, R>(
         &self,
         reference: Reference,
@@ -141,6 +153,7 @@ where
 type RepliesMapping<T> =
     HashMap<u64, oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>>;
 
+/// A channel for receiving/sending Phoenix messages of a particular topic.
 #[derive(Debug)]
 struct Channel<T, V, P, R> {
     status: ChannelStatus,
@@ -152,19 +165,23 @@ struct Channel<T, V, P, R> {
 
     replies: RepliesMapping<T>,
     reference: Reference,
+
+    /// Reference of last successful rejoin message
     join_ref: u64,
 
+    /// Tx for Rejoin Task -> Channel
     rejoin_tx: UnboundedSender<RejoinChannelMessage<T, Value, Value, Value>>,
+    /// Rx for Rejoin Task -> Channel
     rejoin_rx: UnboundedReceiver<RejoinChannelMessage<T, Value, Value, Value>>,
 
-    // In from handler
+    /// Handler -> Channel
     handler_rx: UnboundedReceiver<HandlerChannelMessage<T>>,
-    // In from handler (for internal messages)
+    /// Handler -> Channel (for internal messages)
     handler_internal_rx: UnboundedReceiver<HandlerChannelInternalMessage<T, V, P, R>>,
 
-    // Out to socket
+    /// Channel -> Socket
     out_tx: UnboundedSender<ChannelSocketMessage<T>>,
-    // In from socket
+    /// Socket -> CHannel
     in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
 
     // Broadcaster for non-reply messages
@@ -178,6 +195,7 @@ where
     P: Serialize + DeserializeOwned + Debug,
     R: Serialize + DeserializeOwned + Debug,
 {
+    /// Sends the reply of a message to its waiting callback.
     fn send_reply(
         &mut self,
         reference: u64,
@@ -190,6 +208,7 @@ where
         }
     }
 
+    /// Handles an inbound message from the socket.
     #[instrument(skip_all, fields(topic = ?self.topic))]
     async fn inbound(&mut self, message: SocketChannelMessage<T>) -> Result<(), serde_json::Error> {
         match message {
@@ -247,6 +266,7 @@ where
         Ok(())
     }
 
+    /// Handles a message from a `ChannelHandler`.
     async fn outbound(
         &mut self,
         HandlerChannelMessage {
@@ -270,6 +290,7 @@ where
         self.outbound_inner(message, reply_callback)
     }
 
+    /// Handles a leave message from a `ChannelHandler`.
     fn outbound_leave(
         &mut self,
         message: WithCallback<()>,
@@ -282,6 +303,7 @@ where
         self.outbound_inner(message, reply_callback)
     }
 
+    /// Sends a message to the socket.
     #[instrument(name = "outbound", skip(self), fields(topic = ?self.topic, message = ?message.content))]
     fn outbound_inner(
         &mut self,
@@ -316,6 +338,7 @@ where
             })
     }
 
+    /// Runs the `Channel` task.
     pub(crate) async fn run(mut self)
     where
         T: Clone + Send + Sync + 'static + Debug,

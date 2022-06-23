@@ -1,4 +1,3 @@
-use self::socket_builder::SocketBuilder;
 use crate::channel::channel_builder::ChannelBuilder;
 use crate::channel::{ChannelHandler, ChannelSocketMessage, SocketChannelMessage};
 use serde::de::DeserializeOwned;
@@ -11,11 +10,12 @@ use std::sync::{
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
-use url::Url;
 
+/// Builder for a `Socket`.
 pub mod socket_builder;
 
-#[derive(Clone)]
+/// Handler half of a `Socket`.
+#[derive(Debug, Clone)]
 pub struct SocketHandler<T> {
     reference: Reference,
     handler_tx: UnboundedSender<HandlerSocketMessage<T>>,
@@ -25,18 +25,10 @@ impl<T> SocketHandler<T>
 where
     T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug + Sync,
 {
-    pub async fn new(endpoint: Url) -> Self {
-        Self::builder(endpoint).build().await
-    }
-
-    pub fn builder(endpoint: Url) -> SocketBuilder {
-        SocketBuilder::new(endpoint)
-    }
-
-    pub fn next_ref(&self) -> u64 {
-        self.reference.next()
-    }
-
+    /// Register a new channel for the socket, returning a corresponding `ChannelHandler`.
+    /// # Panics
+    /// This function will panic if the underlying `Socket` has been dropped.
+    /// This function will panic if the given topic has already been registered.
     pub async fn channel<V, P, R>(
         &mut self,
         channel_builder: ChannelBuilder<T>,
@@ -60,23 +52,28 @@ where
         channel_builder.build::<V, P, R>(self.reference.clone(), socket_channel, channel_socket)
     }
 
+    /// Close the socket, dropping all queued messages. This function will work even if the underlying socket has already been closed by another `SocketHandler`.
     pub fn close(self) {
         let _ = self.handler_tx.send(HandlerSocketMessage::Close);
     }
 }
 
+/// A monotonically-increasing counter for tracking messages.
 #[derive(Clone, Debug)]
 pub struct Reference(Arc<AtomicU64>);
 
 impl Reference {
+    /// Constructs a new `Reference`.
     pub(crate) fn new() -> Self {
         Self(Arc::new(AtomicU64::new(0)))
     }
 
+    /// Fetch the next value.
     pub fn next(&self) -> u64 {
         self.0.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// Reset the counter.
     pub(crate) fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);
     }
@@ -93,6 +90,7 @@ type HandlerSocketMessageCallback<T> = oneshot::Sender<(
     UnboundedSender<ChannelSocketMessage<T>>,
 )>;
 
+/// M
 enum HandlerSocketMessage<T> {
     Close,
     Subscribe {

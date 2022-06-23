@@ -9,6 +9,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc::UnboundedSender, oneshot};
 use tokio_tungstenite::tungstenite;
 
+/// Builder for the Channel
 pub mod channel_builder;
 
 struct HandlerChannelMessage<T> {
@@ -26,6 +27,7 @@ enum HandlerChannelInternalMessage<T, V, P, R> {
     },
 }
 
+/// Handler half of a `Channel`.
 #[derive(Clone)]
 pub struct ChannelHandler<T, V, P, R> {
     handler_tx: UnboundedSender<HandlerChannelMessage<T>>,
@@ -40,6 +42,9 @@ where
     P: Serialize,
     R: Serialize,
 {
+    /// Sends a message to the server.
+    /// # Panics
+    /// This function will panic if the underlying channel has been dropped.
     pub async fn send(
         &mut self,
         event: Event<V>,
@@ -79,6 +84,9 @@ where
         })
     }
 
+    /// Gets a receiver subscribed to non-reply channel messages.
+    /// # Panics
+    /// This function will panic if the underlying channel has been dropped.
     pub async fn subscribe(&mut self) -> broadcast::Receiver<Message<T, V, P, R>> {
         let (tx, rx) = oneshot::channel();
 
@@ -91,6 +99,7 @@ where
         rx.await.unwrap()
     }
 
+    /// Close the channel, dropping all queued messages. This function will work even if the underlying channel has already been closed by another `ChannelHandler`.
     pub async fn close(self) -> Result<Message<T, V, P, R>, Error>
     where
         T: Serialize,
@@ -128,7 +137,7 @@ where
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
-pub enum ChannelStatus {
+pub(crate) enum ChannelStatus {
     // Channel is closed, and should be rejoined.
     Rejoin,
     // Channel has been closed by the server.

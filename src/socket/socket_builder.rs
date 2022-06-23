@@ -25,13 +25,17 @@ type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::M
 // type Stream = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 type TungsteniteWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-#[derive(Clone, Copy)]
+/// What the socket should do if an IO error is encountered.
+#[derive(Debug, Clone, Copy)]
 pub enum OnIoError {
+    /// Close the socket connection permanently.
     Die,
+    /// Retry according to the configured reconnection strategy.
     Retry,
 }
 
-#[derive(Clone)]
+/// Builder for a socket
+#[derive(Debug, Clone)]
 pub struct SocketBuilder {
     endpoint: Url,
     websocket_config: Option<WebSocketConfig>,
@@ -41,6 +45,7 @@ pub struct SocketBuilder {
 }
 
 impl SocketBuilder {
+    /// Constructs a new `SocketBuilder`. `endpoint` is the endpoint to connect to; only `vsn=2.0.0` is supported.
     pub fn new(mut endpoint: Url) -> Self {
         endpoint.query_pairs_mut().append_pair("vsn", "2.0.0");
 
@@ -53,6 +58,7 @@ impl SocketBuilder {
         }
     }
 
+    /// Sets the endpoint to connect to. Only `vsn=2.0.0` is supported.
     pub fn endpoint(&mut self, mut endpoint: Url) {
         // Only vsn=2.0.0 is supported
         endpoint.query_pairs_mut().append_pair("vsn", "2.0.0");
@@ -60,22 +66,27 @@ impl SocketBuilder {
         self.endpoint = endpoint;
     }
 
+    /// Sets the configuration for the underlying `tungstenite` websocket.
     pub fn websocket_config(&mut self, websocket_config: Option<WebSocketConfig>) {
         self.websocket_config = websocket_config;
     }
 
+    /// Sets the interval between heartbeat messages.
     pub fn heartbeat(&mut self, heartbeat: Duration) {
         self.heartbeat = heartbeat;
     }
 
+    /// Sets the strategy for attempting reconnection using exponential backoff.
     pub fn reconnect(&mut self, reconnect: ExponentialBackoff) {
         self.reconnect = reconnect;
     }
 
+    /// Sets how to handle an IO error.
     pub fn on_io_error(&mut self, on_io_error: OnIoError) {
         self.on_io_error = on_io_error;
     }
 
+    /// Spawns the `Socket` and returns a corresponding `SocketHandler`.
     pub async fn build<T>(&self) -> SocketHandler<T>
     where
         T: Serialize + DeserializeOwned + Eq + Hash + Send + Sync + 'static + Debug,
@@ -111,15 +122,22 @@ impl SocketBuilder {
     }
 }
 
+/// A socket for managing and receiving/sending Phoenix messages.
 struct Socket<T> {
+    /// SocketHandler -> Socket
     handler_rx: UnboundedReceiver<HandlerSocketMessage<T>>,
 
+    /// Tx for Channel -> Socket
     out_tx: UnboundedSender<ChannelSocketMessage<T>>,
+    /// Rx for Channel -> Socket
     out_rx: UnboundedReceiver<ChannelSocketMessage<T>>,
 
+    /// Mapping of channels to their channel senders
     subscriptions: HashMap<T, UnboundedSender<SocketChannelMessage<T>>>,
 
+    /// Counter for heartbeat
     reference: Reference,
+
     endpoint: Url,
     websocket_config: Option<WebSocketConfig>,
     heartbeat: Duration,
@@ -131,6 +149,7 @@ impl<T> Socket<T>
 where
     T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
 {
+    /// Connect to the websocket with exponential backoff.
     #[instrument(skip(self), fields(endpoint = %self.endpoint))]
     async fn connect_with_backoff(&self) -> Result<TungsteniteWebSocketStream, tungstenite::Error> {
         backoff::future::retry(self.reconnect.clone(), || async {
@@ -140,6 +159,7 @@ where
         .map(|(twss, _)| twss)
     }
 
+    /// Runs the `Socket` task.
     pub async fn run(mut self) -> Result<(), tungstenite::Error> {
         let mut interval = {
             let mut i = time::interval(self.heartbeat);
@@ -148,11 +168,8 @@ where
         };
 
         'retry: loop {
-            // TODO: Lock all channels
-            {
-                for (_, chan) in self.subscriptions.iter_mut() {
-                    let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Rejoin));
-                }
+            for (_, chan) in self.subscriptions.iter_mut() {
+                let _ = chan.send(SocketChannelMessage::ChannelStatus(ChannelStatus::Rejoin));
             }
             self.reference.reset();
 
@@ -226,6 +243,7 @@ where
         Ok(())
     }
 
+    /// Sends a heartbeat message to the server.
     #[instrument(skip_all)]
     async fn send_hearbeat(reference: u64, sink: &mut Sink) -> Result<(), tungstenite::Error> {
         let heartbeat_message: tungstenite::Message =
@@ -238,6 +256,7 @@ where
         sink.send(heartbeat_message).await
     }
 
+    /// Handles an incoming message from a `Channel`.
     #[instrument(skip_all, fields(endpoint = %self.endpoint))]
     async fn from_channel(
         &mut self,
@@ -257,6 +276,7 @@ where
         Ok(())
     }
 
+    /// Handles an incoming message from the websocket.
     #[instrument(skip_all, fields(endpoint = %self.endpoint))]
     async fn from_websocket(
         &mut self,
@@ -276,6 +296,7 @@ where
         }
     }
 
+    /// Transforms a websocket message into a Phoenix message, then relaying it to the appropriate `Channel`.
     async fn decode_and_relay(&mut self, text: String) -> Result<(), serde_json::Error> {
         use serde_json::Value;
 

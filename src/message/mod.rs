@@ -10,25 +10,41 @@ use crate::error::Error;
 
 use self::event::{Event, ProtocolEvent};
 
+/// Events that messages can represent.
 pub mod event;
 
+/// A Phoenix channel message. This struct is serialized into an array (omitting the keys).
 #[derive(Debug, Clone)]
 pub struct Message<T, V, P, R> {
-    pub(crate) join_ref: Option<u64>,
-    pub(crate) reference: Option<u64>,
-    pub(crate) topic: T,
-    pub(crate) event: Event<V>,
-    pub(crate) payload: Option<Payload<P, R>>,
+    /// Reference of the join message for the topic.
+    pub join_ref: Option<u64>,
+    /// Unique identifier for this message.
+    pub reference: Option<u64>,
+    /// Topic of this message.
+    pub topic: T,
+    /// Event this message represents.
+    pub event: Event<V>,
+    /// Payload of this message.
+    pub payload: Option<Payload<P, R>>,
 }
 
+/// The payload a `Message` can contain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Payload<P, R> {
-    PushReply { status: PushStatus, response: P },
+    /// Reply/acknowledgement of a message sent from the client. (Non-sendable)
+    PushReply {
+        /// The status of the reply.
+        status: PushStatus,
+        /// The body of the reply.
+        response: P,
+    },
+    /// A custom outbound payload. (Non-receivable)
     Custom(R),
 }
 
 impl<P, R> Payload<P, R> {
+    /// Maps a `Payload<P, R>` to `Payload<Q, R>`.
     pub fn map_push_reply<Q, F>(self, f: F) -> Payload<Q, R>
     where
         F: FnOnce(P) -> Q,
@@ -42,6 +58,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
+    /// Maps a `Payload<P, R>` to `Payload<P, S>`.
     pub fn map_custom<S, F>(self, f: F) -> Payload<P, S>
     where
         F: FnOnce(R) -> S,
@@ -52,6 +69,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
+    /// Maps a `Payload<P, R>` to `Payload<Q, R>` using a fallible closure.
     pub fn try_map_push_reply<Q, F, E>(self, f: F) -> Result<Payload<Q, R>, E>
     where
         F: FnOnce(P) -> Result<Q, E>,
@@ -65,6 +83,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
+    /// Maps a `Payload<P, R>` to `Payload<P, S>` using a fallible closure.
     pub fn try_map_custom<S, F, E>(self, f: F) -> Result<Payload<P, S>, E>
     where
         F: FnOnce(R) -> Result<S, E>,
@@ -76,14 +95,18 @@ impl<P, R> Payload<P, R> {
     }
 }
 
+/// Status of a message sent to the server.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PushStatus {
+    /// Message was ok.
     Ok,
+    /// Message encountered an error.
     Error,
 }
 
 impl Message<String, (), (), ()> {
+    /// Creates a heartbeat message.
     pub fn heartbeat(reference: u64) -> Self {
         Self {
             join_ref: Some(0),
@@ -96,6 +119,7 @@ impl Message<String, (), (), ()> {
 }
 
 impl<T> Message<T, Value, Value, Value> {
+    /// Creates a leave message for a topic.
     pub fn leave(topic: T, reference: u64) -> Self {
         Self {
             join_ref: Some(0),
@@ -114,6 +138,7 @@ where
     P: Serialize,
     R: Serialize,
 {
+    /// Creates a new `Message`.
     pub fn new(
         join_ref: u64,
         reference: u64,
@@ -130,6 +155,7 @@ where
         }
     }
 
+    /// Creates a join message for a topic.
     pub fn join(reference: u64, topic: T, payload: Option<R>) -> Self {
         Self::new(
             0,
@@ -217,6 +243,7 @@ where
     }
 }
 
+/// Wrapper around a type with a callback for the result of send.
 #[derive(Debug)]
 pub(crate) struct WithCallback<T> {
     pub(crate) content: T,
@@ -224,6 +251,7 @@ pub(crate) struct WithCallback<T> {
 }
 
 impl<T> WithCallback<T> {
+    /// Creates a new `WithCallback`.
     pub(crate) fn new(content: T) -> (Self, oneshot::Receiver<Result<(), tungstenite::Error>>) {
         let (tx, rx) = oneshot::channel();
         (
@@ -235,6 +263,7 @@ impl<T> WithCallback<T> {
         )
     }
 
+    /// Maps a `WithCallback<T>` to `WithCallback<U>`.
     pub(crate) fn map<U, F>(self, f: F) -> WithCallback<U>
     where
         F: FnOnce(T) -> U,
@@ -245,6 +274,7 @@ impl<T> WithCallback<T> {
         }
     }
 
+    /// Maps a `WithCallback<T>` to `WithCallback<U>` using a fallible closure.
     pub(crate) fn try_map<U, F, E>(self, f: F) -> Result<WithCallback<U>, E>
     where
         F: FnOnce(T) -> Result<U, E>,
@@ -256,6 +286,7 @@ impl<T> WithCallback<T> {
     }
 }
 
+/// Handles the sending of a message and receiving its reply, with a timeout.
 pub(crate) async fn run_message<T, V, P, R>(
     send_callback: oneshot::Receiver<Result<(), tungstenite::Error>>,
     mut receive_callback: oneshot::Receiver<Result<Message<T, V, P, R>, Error>>,

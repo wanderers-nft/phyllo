@@ -104,12 +104,17 @@ where
     }
 
     /// Spawns the `Channel` and returns a corresponding `ChannelHandler`.
+    // Allow type complexity here (for some reason it doesn't complain about SocketHandler::channel!)
+    #[allow(clippy::type_complexity)]
     pub(crate) fn build<V, P, R>(
         &self,
         reference: Reference,
         out_tx: UnboundedSender<ChannelSocketMessage<T>>,
         in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
-    ) -> ChannelHandler<T, V, P, R>
+    ) -> (
+        ChannelHandler<T, V, P, R>,
+        broadcast::Receiver<Message<T, V, P, R>>,
+    )
     where
         T: Serialize + DeserializeOwned + Send + Sync + Clone + 'static + Debug,
         V: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
@@ -118,6 +123,7 @@ where
     {
         let (handler_tx, handler_rx) = unbounded_channel();
         let (broadcast_tx, _) = broadcast::channel(self.broadcast_buffer);
+        let immediate_rx = broadcast_tx.subscribe();
         let (rejoin_tx, rejoin_rx) = unbounded_channel();
 
         let (handler_internal_tx, handler_internal_rx) = unbounded_channel();
@@ -143,11 +149,14 @@ where
 
         tokio::spawn(channel.run());
 
-        ChannelHandler {
-            handler_tx,
-            timeout: self.timeout,
-            handler_internal_tx,
-        }
+        (
+            ChannelHandler {
+                handler_tx,
+                timeout: self.timeout,
+                handler_internal_tx,
+            },
+            immediate_rx,
+        )
     }
 }
 
@@ -366,7 +375,7 @@ where
                 _ => {
                     self.rejoin_inflight = false;
                     None.into()
-                },
+                }
             };
 
             'inner: loop {

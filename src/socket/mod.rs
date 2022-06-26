@@ -1,5 +1,6 @@
 use crate::channel::channel_builder::ChannelBuilder;
 use crate::channel::{ChannelHandler, ChannelSocketMessage, SocketChannelMessage};
+use crate::message::Message;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
@@ -9,7 +10,7 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 /// Builder for a `Socket`.
 pub mod socket_builder;
@@ -32,7 +33,10 @@ where
     pub async fn channel<V, P, R>(
         &mut self,
         channel_builder: ChannelBuilder<T>,
-    ) -> ChannelHandler<T, V, P, R>
+    ) -> (
+        ChannelHandler<T, V, P, R>,
+        broadcast::Receiver<Message<T, V, P, R>>,
+    )
     where
         T: Serialize + DeserializeOwned + Send + Sync + Clone + Eq + Hash,
         V: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,

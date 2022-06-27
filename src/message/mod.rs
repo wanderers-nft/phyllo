@@ -1,14 +1,11 @@
-use std::time::Duration;
-
+use self::event::{Event, ProtocolEvent};
+use crate::error::Error;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use tokio::{select, sync::oneshot};
 use tokio_tungstenite::tungstenite;
 use tracing::warn;
-
-use crate::error::Error;
-
-use self::event::{Event, ProtocolEvent};
 
 /// Events that messages can represent.
 pub mod event;

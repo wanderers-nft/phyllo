@@ -1,11 +1,10 @@
-use std::time::Duration;
-
 use crate::{
     error::Error,
     message::{event::Event, run_message, Message, Payload, WithCallback},
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc::UnboundedSender, oneshot};
 use tokio_tungstenite::tungstenite;
 

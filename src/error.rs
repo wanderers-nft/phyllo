@@ -1,7 +1,7 @@
 use std::result;
 use thiserror::Error;
 
-/// Conveience result type for this crate's error type.
+/// Convenience result type for this crate's error type.
 pub type Result<T, E = Error> = result::Result<T, E>;
 
 /// Errors that can be encountered while handling messages.

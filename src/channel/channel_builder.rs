@@ -1,3 +1,15 @@
+use super::{
+    ChannelHandler, ChannelSocketMessage, ChannelStatus, HandlerChannelInternalMessage,
+    HandlerChannelMessage, SocketChannelMessage,
+};
+use crate::{
+    error::{ChannelJoinError, Error},
+    message::{
+        event::{Event, ProtocolEvent},
+        run_message, Message, Payload, PushStatus, WithCallback,
+    },
+    socket::Reference,
+};
 use backoff::ExponentialBackoff;
 use futures_util::future::OptionFuture;
 use serde::{de::DeserializeOwned, Serialize};
@@ -16,20 +28,6 @@ use tokio::{
     },
 };
 use tracing::{info, instrument, warn};
-
-use crate::{
-    error::{ChannelJoinError, Error},
-    message::{
-        event::{Event, ProtocolEvent},
-        run_message, Message, Payload, PushStatus, WithCallback,
-    },
-    socket::Reference,
-};
-
-use super::{
-    ChannelHandler, ChannelSocketMessage, ChannelStatus, HandlerChannelInternalMessage,
-    HandlerChannelMessage, SocketChannelMessage,
-};
 
 /// Builder for a channel
 #[derive(Debug, Clone)]

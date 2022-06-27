@@ -1,16 +1,23 @@
-use crate::channel::channel_builder::ChannelBuilder;
-use crate::channel::{ChannelHandler, ChannelSocketMessage, SocketChannelMessage};
-use crate::message::Message;
-use serde::de::DeserializeOwned;
-use serde::Serialize;
-use std::fmt::Debug;
-use std::hash::Hash;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use crate::{
+    channel::{
+        channel_builder::ChannelBuilder, ChannelHandler, ChannelSocketMessage, SocketChannelMessage,
+    },
+    message::Message,
 };
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::sync::{broadcast, oneshot};
+use serde::{de::DeserializeOwned, Serialize};
+use std::{
+    fmt::Debug,
+    hash::Hash,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+use tokio::sync::{
+    broadcast,
+    mpsc::{UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
 
 /// Builder for a `Socket`.
 pub mod socket_builder;

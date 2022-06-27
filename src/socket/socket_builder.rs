@@ -153,7 +153,15 @@ where
     #[instrument(skip(self), fields(endpoint = %self.endpoint))]
     async fn connect_with_backoff(&self) -> Result<TungsteniteWebSocketStream, tungstenite::Error> {
         backoff::future::retry(self.reconnect.clone(), || async {
-            Ok(connect_async_with_config(self.endpoint.clone(), self.websocket_config).await?)
+            info!("attempting connection");
+            Ok(
+                connect_async_with_config(self.endpoint.clone(), self.websocket_config)
+                    .await
+                    .map_err(|e| {
+                        warn!(error = ?e);
+                        e
+                    })?,
+            )
         })
         .await
         .map(|(twss, _)| twss)

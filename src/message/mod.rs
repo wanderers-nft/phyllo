@@ -6,38 +6,64 @@ use tokio::{select, sync::oneshot};
 use tokio_tungstenite::tungstenite;
 use tracing::warn;
 
-/// A Phoenix channel message. This struct is serialized into an array (omitting the keys).
+/// A message in the Phoenix channels protocol.
+///
+/// Messages are serialized into an array, omitting the keys, instead of a regular JSON object.
+/// ```
+/// # use serde_json::{json, Value};
+/// # use phyllo::message::{Message, Event, Payload};
+/// type MessageType = Message<Value, Value, Value, Value>;
+///
+/// let message: MessageType = Message::new(
+///     0,
+///     0,
+///     json!("topic"),
+///     Event::Event(json!("event")),
+///     Some(Payload::Custom(json!({"name": "Emerald"}))),
+/// );
+///
+/// assert_eq!(
+///     serde_json::to_string(&message)?,
+///     r#"[0,0,"topic","event",{"name":"Emerald"}]"#
+/// );
+/// # Ok::<(), serde_json::Error>(())
+/// ```
+///
+/// # Warning
+/// `"phoenix"` is a protocol-reserved identifier for messages such as heartbeat.
+/// The server will close your connection if you send an irregular message with a topic that serializes into `"phoenix"`.
 #[derive(Debug, Clone)]
 pub struct Message<T, V, P, R> {
-    /// Reference of the join message for the topic.
+    /// Reference of the latest successful join message for the topic.
     pub join_ref: Option<u64>,
     /// Unique identifier for this message.
     pub reference: Option<u64>,
-    /// Topic of this message.
+    /// Topic of the message.
     pub topic: T,
-    /// Event this message represents.
+    /// Event of the message.
     pub event: Event<V>,
-    /// Payload of this message.
+    /// Payload of the message.
     pub payload: Option<Payload<P, R>>,
 }
 
-/// The payload a `Message` can contain.
+/// The payload of a [`Message`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Payload<P, R> {
-    /// Reply/acknowledgement of a message sent from the client. (Non-sendable)
+    /// Reply/acknowledgement of a message sent from the client.
+    /// This variant should not be sent to the server.
     PushReply {
-        /// The status of the reply.
+        /// Status of the reply.
         status: PushStatus,
-        /// The body of the reply.
+        /// Body of the reply.
         response: P,
     },
-    /// A custom outbound payload. (Non-receivable)
+    /// A custom payload.
     Custom(R),
 }
 
 impl<P, R> Payload<P, R> {
-    /// Maps a `Payload<P, R>` to `Payload<Q, R>`.
+    /// Maps a [`Payload<P, R>`] to [`Payload<Q, R>`].
     pub fn map_push_reply<Q, F>(self, f: F) -> Payload<Q, R>
     where
         F: FnOnce(P) -> Q,
@@ -51,7 +77,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
-    /// Maps a `Payload<P, R>` to `Payload<P, S>`.
+    /// Maps a [`Payload<P, R>`] to [`Payload<P, S>`].
     pub fn map_custom<S, F>(self, f: F) -> Payload<P, S>
     where
         F: FnOnce(R) -> S,
@@ -62,7 +88,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
-    /// Maps a `Payload<P, R>` to `Payload<Q, R>` using a fallible closure.
+    /// Maps a [`Payload<P, R>`] to [`Payload<Q, R>`] using a fallible closure.
     pub fn try_map_push_reply<Q, F, E>(self, f: F) -> Result<Payload<Q, R>, E>
     where
         F: FnOnce(P) -> Result<Q, E>,
@@ -76,7 +102,7 @@ impl<P, R> Payload<P, R> {
         }
     }
 
-    /// Maps a `Payload<P, R>` to `Payload<P, S>` using a fallible closure.
+    /// Maps a [`Payload<P, R>`] to [`Payload<P, S>`] using a fallible closure.
     pub fn try_map_custom<S, F, E>(self, f: F) -> Result<Payload<P, S>, E>
     where
         F: FnOnce(R) -> Result<S, E>,
@@ -88,7 +114,7 @@ impl<P, R> Payload<P, R> {
     }
 }
 
-/// Status of a message sent to the server.
+/// Status of a message sent to the server, received as a response.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PushStatus {
@@ -100,6 +126,17 @@ pub enum PushStatus {
 
 impl Message<String, (), (), ()> {
     /// Creates a heartbeat message.
+    /// ```
+    /// # use serde_json::{json, Value};
+    /// # use phyllo::message::{Message, Event, Payload};
+    /// let message = Message::heartbeat(1);
+    ///
+    /// assert_eq!(
+    ///     serde_json::to_string(&message)?,
+    ///     r#"[0,1,"phoenix","heartbeat",null]"#
+    /// );
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn heartbeat(reference: u64) -> Self {
         Self {
             join_ref: Some(0),
@@ -113,6 +150,17 @@ impl Message<String, (), (), ()> {
 
 impl<T> Message<T, Value, Value, Value> {
     /// Creates a leave message for a topic.
+    /// ```
+    /// # use serde_json::{json, Value};
+    /// # use phyllo::message::{Message, Event, Payload};
+    /// let message = Message::leave(json!("topic"), 1);
+    ///
+    /// assert_eq!(
+    ///     serde_json::to_string(&message)?,
+    ///     r#"[0,1,"topic","phx_leave",null]"#
+    /// );
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
     pub fn leave(topic: T, reference: u64) -> Self {
         Self {
             join_ref: Some(0),
@@ -149,7 +197,7 @@ where
     }
 
     /// Creates a join message for a topic.
-    pub fn join(reference: u64, topic: T, payload: Option<R>) -> Self {
+    pub(crate) fn join(reference: u64, topic: T, payload: Option<R>) -> Self {
         Self::new(
             0,
             reference,
@@ -236,7 +284,7 @@ where
     }
 }
 
-/// Wrapper around a type with a callback for the result of send.
+/// Wrapper around a type with a callback for the send result.
 #[derive(Debug)]
 pub(crate) struct WithCallback<T> {
     pub(crate) content: T,
@@ -320,7 +368,6 @@ where
 
         v = receive_callback => {
             match v {
-                // todo: how tf do you handle this
                 Err(_) => Err(Error::SocketDropped),
                 Ok(v) => v,
             }

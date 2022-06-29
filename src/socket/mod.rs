@@ -46,10 +46,10 @@ impl<T> SocketHandler<T>
 where
     T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug + Sync,
 {
-    /// Register a new channel for the socket, returning a corresponding `ChannelHandler`.
+    /// Register a new channel for the socket, returning a corresponding [`ChannelHandler`].
+    ///
     /// # Panics
-    /// This function will panic if the underlying `Socket` has been dropped.
-    /// This function will panic if the given topic has already been registered.
+    /// Panics if the underlying `Socket` has been dropped, or if the given topic has already been registered.
     pub async fn channel<V, P, R>(
         &mut self,
         channel_builder: ChannelBuilder<T>,
@@ -109,13 +109,17 @@ impl Default for Reference {
     }
 }
 
+/// Callback for a topic subscription message sent from a `SocketHandler` to a `Socket`.
 type HandlerSocketMessageCallback<T> = oneshot::Sender<(
     UnboundedReceiver<SocketChannelMessage<T>>,
     UnboundedSender<ChannelSocketMessage<T>>,
 )>;
 
+/// A message sent from a `SocketHandler` to a `Socket`.
 enum HandlerSocketMessage<T> {
+    /// Close the socket.
     Close,
+    /// Create a subscription for the topic.
     Subscribe {
         topic: T,
         callback: HandlerSocketMessageCallback<T>,
@@ -135,7 +139,7 @@ pub enum OnIoError {
     Retry,
 }
 
-/// Builder for a socket
+/// Builder for a `Socket`.
 #[derive(Debug, Clone)]
 pub struct SocketBuilder {
     endpoint: Url,
@@ -161,7 +165,6 @@ impl SocketBuilder {
 
     /// Sets the endpoint to connect to. Only `vsn=2.0.0` is supported.
     pub fn endpoint(&mut self, mut endpoint: Url) {
-        // Only vsn=2.0.0 is supported
         endpoint.query_pairs_mut().append_pair("vsn", "2.0.0");
 
         self.endpoint = endpoint;
@@ -405,7 +408,7 @@ where
         }
     }
 
-    /// Transforms a websocket message into a Phoenix message, then relaying it to the appropriate `Channel`.
+    /// Transforms a websocket message into a `Message`, then relays it to the appropriate `Channel`.
     async fn decode_and_relay(&mut self, text: String) -> Result<(), serde_json::Error> {
         use serde_json::Value;
 

@@ -1,7 +1,7 @@
 use std::result;
 use thiserror::Error;
 
-/// Convenience result type for this crate's error type.
+/// Convenience result type for [`enum@Error`].
 pub type Result<T, E = Error> = result::Result<T, E>;
 
 /// Errors that can be encountered while handling messages.
@@ -25,7 +25,7 @@ pub enum Error {
 /// This error variant is used to catch successful replies with an errored payload, which is **not** considered an error in regular usage.
 #[derive(Debug, Error)]
 pub(crate) enum ChannelJoinError<P> {
-    /// See `phyllo::Error`.
+    /// See [`enum@Error`].
     #[error(transparent)]
     Error(#[from] Error),
     /// Message was replied to successfully, but payload contained an error.

@@ -16,3 +16,6 @@ tracing = "0.1.35"
 thiserror = "1.0.31"
 tokio-stream = "0.1.8"
 backoff = {version = "0.4.0", features = ["tokio"] }
+
+[dev-dependencies]
+anyhow = "1.0.58"

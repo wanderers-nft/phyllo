@@ -23,22 +23,30 @@ use tokio::{
 use tokio_tungstenite::tungstenite;
 use tracing::{info, instrument, warn};
 
+/// Message sent from a `ChannelHandler` to its `Channel`. These messages will not be consumed by the `Channel` until it has joined and is ready to send messages to the `Socket`.
 struct HandlerChannelMessage<T> {
     message: WithCallback<(Event<Value>, Payload<Value, Value>)>,
     reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
 }
 
+/// A priority message sent from a `ChannelHandler` to its `Channel`. These messages will always be processed regardless of whether the `Channel` has been joined.
 enum HandlerChannelInternalMessage<T, V, P, R> {
+    /// Send a leave message, destroying the `Channel`.
     Leave {
         callback: WithCallback<()>,
         reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
     },
+    /// Create a new subscription to the message broadcast.
     Broadcast {
         callback: oneshot::Sender<broadcast::Receiver<Message<T, V, P, R>>>,
     },
 }
 
 /// Handler half of a `Channel`.
+///
+/// # Errors
+/// For functions that return `Result<Message, Error>`, an error is returned if the function fails to send, receive, encode or decode messages.
+/// It is **not** considered a failure for the server to successfully reply with an error.
 #[derive(Clone)]
 pub struct ChannelHandler<T, V, P, R> {
     handler_tx: UnboundedSender<HandlerChannelMessage<T>>,
@@ -54,8 +62,9 @@ where
     R: Serialize,
 {
     /// Sends a message to the server.
+    ///
     /// # Panics
-    /// This function will panic if the underlying channel has been dropped.
+    /// Panics if the underlying `Channel` has been dropped.
     pub async fn send(
         &mut self,
         event: Event<V>,
@@ -96,8 +105,9 @@ where
     }
 
     /// Gets a receiver subscribed to non-reply channel messages.
+    ///
     /// # Panics
-    /// This function will panic if the underlying channel has been dropped.
+    /// Panics if the underlying `Channel` has been dropped.
     pub async fn subscribe(&mut self) -> broadcast::Receiver<Message<T, V, P, R>> {
         let (tx, rx) = oneshot::channel();
 
@@ -110,7 +120,10 @@ where
         rx.await.unwrap()
     }
 
-    /// Close the channel, dropping all queued messages. This function will work even if the underlying channel has already been closed by another `ChannelHandler`.
+    /// Close the channel, dropping the corresponding `Channel`.
+    ///
+    /// # Errors
+    /// [`Timeout`](crate::error::Error::Timeout) is returned if the underlying channel has already been closed by another [`ChannelHandler`],
     pub async fn close(self) -> Result<Message<T, V, P, R>, Error>
     where
         T: Serialize,
@@ -148,38 +161,46 @@ where
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
+/// The status of a `Channel`.
 pub(crate) enum ChannelStatus {
-    // Channel is closed, and should be rejoined.
+    /// Underlying websocket was reset, a rejoin will be attempted.
     Rejoin,
-    // Channel has been closed by the server.
+    /// Closed by the server.
     Closed,
-    // Channel has recieved an error from the server.
+    /// Recieved an error from the server, a rejoin will be attempted.
     Errored,
-    // Channel has been joined.
+    /// Joined and ready to receive messages.
     Joined,
-    // The underlying socket has closed.
+    /// The underlying socket has closed.
     SocketClosed,
 }
 
 impl ChannelStatus {
-    pub fn should_rejoin(self) -> bool {
+    /// Whether a rejoin should be attempted.
+    pub(crate) fn should_rejoin(self) -> bool {
         self == Self::Rejoin || self == Self::Errored
     }
 }
 
+/// Message sent from a `Socket` to a `Channel`.
 #[derive(Debug)]
 pub(crate) enum SocketChannelMessage<T> {
+    /// A message with the registered topic.
     Message(Message<T, Value, Value, Value>),
+    /// An update to the channel's status.
     ChannelStatus(ChannelStatus),
 }
 
+/// Message sent from a `Channel` to a `Socket`.
 #[derive(Debug)]
 pub(crate) enum ChannelSocketMessage<T> {
+    /// A message to be sent to the websocket.
     Message(WithCallback<tungstenite::Message>),
+    /// The channel has been dropped.
     TaskEnded(T),
 }
 
-/// Builder for a channel
+/// Builder for a `Channel`.
 #[derive(Debug, Clone)]
 pub struct ChannelBuilder<T> {
     pub(crate) topic: T,
@@ -194,7 +215,7 @@ impl<T> ChannelBuilder<T>
 where
     T: Serialize,
 {
-    /// Constructs a new `ChannelBuilder`. `topic` is the topic used for messages sent/received through this channel.
+    /// Constructs a new [`ChannelBuilder`]. `topic` is the topic used for messages sent/received through this channel.
     pub fn new(topic: T) -> Self {
         Self {
             topic,
@@ -228,7 +249,7 @@ where
 
     /// Sets the param to be sent during joining.
     /// # Panics
-    /// This function will panic if `params` cannot be successfully serialized.
+    /// Panics if `params` fails to serialize.
     pub fn params<U>(&mut self, params: Option<U>)
     where
         U: Serialize,
@@ -246,12 +267,12 @@ where
         Ok(())
     }
 
-    /// Sets the size of the broadcast buffer.
+    /// Sets the buffer size of the broadcast channel. See [`tokio::sync::broadcast`].
     pub fn broadcast_buffer(&mut self, broadcast_buffer: usize) {
         self.broadcast_buffer = broadcast_buffer;
     }
 
-    /// Spawns the `Channel` and returns a corresponding `ChannelHandler`.
+    /// Spawns the `Channel` and returns a corresponding [`ChannelHandler`].
     // Allow type complexity here (for some reason it doesn't complain about SocketHandler::channel!)
     #[allow(clippy::type_complexity)]
     pub(crate) fn build<V, P, R>(
@@ -308,6 +329,7 @@ where
     }
 }
 
+/// Mapping of message references to their callback.
 type RepliesMapping<T> =
     HashMap<u64, oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>>;
 
@@ -327,9 +349,9 @@ struct Channel<T, V, P, R> {
     /// Reference of last successful rejoin message
     join_ref: u64,
 
-    /// Tx for Rejoin Task -> Channel
+    /// Tx for Rejoin -> Channel
     rejoin_tx: UnboundedSender<RejoinChannelMessage<T, Value, Value, Value>>,
-    /// Rx for Rejoin Task -> Channel
+    /// Rx for Rejoin -> Channel
     rejoin_rx: UnboundedReceiver<RejoinChannelMessage<T, Value, Value, Value>>,
 
     /// Handler -> Channel
@@ -342,9 +364,10 @@ struct Channel<T, V, P, R> {
     /// Socket -> CHannel
     in_rx: UnboundedReceiver<SocketChannelMessage<T>>,
 
-    // Broadcaster for non-reply messages
+    /// Broadcaster for non-reply messages
     broadcast: broadcast::Sender<Message<T, V, P, R>>,
 
+    /// Whether a rejoiner task has already been dispatched
     rejoin_inflight: bool,
 }
 
@@ -368,7 +391,7 @@ where
         }
     }
 
-    /// Handles an inbound message from the socket.
+    /// Handles an inbound message from the `Socket`.
     #[instrument(skip_all, fields(topic = ?self.topic))]
     async fn inbound(&mut self, message: SocketChannelMessage<T>) -> Result<(), serde_json::Error> {
         match message {
@@ -463,7 +486,7 @@ where
         self.outbound_inner(message, reply_callback)
     }
 
-    /// Sends a message to the socket.
+    /// Sends a message to the `Socket`.
     #[instrument(name = "outbound", skip(self), fields(topic = ?self.topic, message = ?message.content))]
     fn outbound_inner(
         &mut self,
@@ -555,8 +578,7 @@ where
                     }
 
                     // When rejoiner task is complete.
-                    // Note that on a successful rejoin, the channel status is set to Joined, which means that it is
-                    // impossible for the rejoin to be polled twice.
+                    // Rejoin cannot ever be polled twice because of `rejoin_inflight`.
                     Some(v) = &mut rejoin, if self.rejoin_inflight => {
                         self.rejoin_inflight = false;
                         match v {
@@ -619,6 +641,7 @@ where
     V: Serialize,
     P: Serialize + Debug,
 {
+    /// Sends a rejoin message.
     async fn join(&self) -> Result<u64, backoff::Error<ChannelJoinError<P>>> {
         let join_ref = self.reference.next();
         let message = Message::<T, V, P, serde_json::Value>::join(
@@ -660,6 +683,7 @@ where
         }
     }
 
+    /// Attempts to rejoin a channel with exponential backoff on failure. If the underlying `Socket` has been dropped, this function immediately returns.
     #[instrument(skip(self), fields(topic = ?self.topic))]
     async fn join_with_backoff(self) -> Result<u64, ChannelJoinError<P>> {
         backoff::future::retry(self.rejoin_after.clone(), || async {

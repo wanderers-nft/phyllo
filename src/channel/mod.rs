@@ -217,48 +217,54 @@ where
     }
 
     /// Sets the topic used for messages sent/recieved through this channel.
-    pub fn topic(&mut self, topic: T) {
+    pub fn topic(&mut self, topic: T) -> &mut Self {
         self.topic = topic;
+        self
     }
 
     /// Sets the timeout duration for messages sent/received through this channel (excluding rejoin messages).
-    pub fn timeout(&mut self, timeout: Duration) {
+    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
         self.timeout = timeout;
+        self
     }
 
     /// Sets the timeout duration for rejoin messages sent by this channel.
-    pub fn rejoin_timeout(&mut self, rejoin_timeout: Duration) {
+    pub fn rejoin_timeout(&mut self, rejoin_timeout: Duration) -> &mut Self {
         self.rejoin_timeout = rejoin_timeout;
+        self
     }
 
     /// Sets the strategy for attempting rejoining using exponential backoff.
-    pub fn rejoin(&mut self, rejoin_after: ExponentialBackoff) {
+    pub fn rejoin(&mut self, rejoin_after: ExponentialBackoff) -> &mut Self {
         self.rejoin = rejoin_after;
+        self
     }
 
     /// Sets the param to be sent during joining.
     /// # Panics
     /// Panics if `params` fails to serialize.
-    pub fn params<U>(&mut self, params: Option<U>)
+    pub fn params<U>(&mut self, params: Option<U>) -> &mut Self
     where
         U: Serialize,
     {
         self.try_params(params)
             .expect("could not serialize parameter");
+        self
     }
 
     /// Sets the param to be sent during joining.
-    pub fn try_params<U>(&mut self, params: Option<U>) -> Result<(), serde_json::Error>
+    pub fn try_params<U>(&mut self, params: Option<U>) -> Result<&mut Self, serde_json::Error>
     where
         U: Serialize,
     {
         self.params = params.map(|v| serde_json::to_value(&v)).transpose()?;
-        Ok(())
+        Ok(self)
     }
 
     /// Sets the buffer size of the broadcast channel. See [`tokio::sync::broadcast`].
-    pub fn broadcast_buffer(&mut self, broadcast_buffer: usize) {
+    pub fn broadcast_buffer(&mut self, broadcast_buffer: usize) -> &mut Self {
         self.broadcast_buffer = broadcast_buffer;
+        self
     }
 
     /// Spawns the `Channel` and returns a corresponding [`ChannelHandler`].

@@ -164,30 +164,35 @@ impl SocketBuilder {
     }
 
     /// Sets the endpoint to connect to. Only `vsn=2.0.0` is supported.
-    pub fn endpoint(&mut self, mut endpoint: Url) {
+    pub fn endpoint(&mut self, mut endpoint: Url) -> &mut Self {
         endpoint.query_pairs_mut().append_pair("vsn", "2.0.0");
 
         self.endpoint = endpoint;
+        self
     }
 
     /// Sets the configuration for the underlying `tungstenite` websocket.
-    pub fn websocket_config(&mut self, websocket_config: Option<WebSocketConfig>) {
+    pub fn websocket_config(&mut self, websocket_config: Option<WebSocketConfig>) -> &mut Self {
         self.websocket_config = websocket_config;
+        self
     }
 
     /// Sets the interval between heartbeat messages.
-    pub fn heartbeat(&mut self, heartbeat: Duration) {
+    pub fn heartbeat(&mut self, heartbeat: Duration) -> &mut Self {
         self.heartbeat = heartbeat;
+        self
     }
 
     /// Sets the strategy for attempting reconnection using exponential backoff.
-    pub fn reconnect(&mut self, reconnect: ExponentialBackoff) {
+    pub fn reconnect(&mut self, reconnect: ExponentialBackoff) -> &mut Self {
         self.reconnect = reconnect;
+        self
     }
 
     /// Sets how to handle an IO error.
-    pub fn on_io_error(&mut self, on_io_error: OnIoError) {
+    pub fn on_io_error(&mut self, on_io_error: OnIoError) -> &mut Self {
         self.on_io_error = on_io_error;
+        self
     }
 
     /// Spawns the `Socket` and returns a corresponding `SocketHandler`.

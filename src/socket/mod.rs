@@ -44,7 +44,7 @@ pub struct SocketHandler<T> {
 
 impl<T> SocketHandler<T>
 where
-    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug + Sync,
+    T: Serialize + DeserializeOwned + Hash + Eq + Clone + Send + Sync + 'static + Debug,
 {
     /// Register a new channel for the socket, returning a corresponding [`ChannelHandler`].
     ///
@@ -58,10 +58,9 @@ where
         broadcast::Receiver<Message<T, V, P, R>>,
     )
     where
-        T: Serialize + DeserializeOwned + Send + Sync + Clone + Eq + Hash,
-        V: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
-        P: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
-        R: Serialize + DeserializeOwned + Send + Clone + 'static + Debug,
+        V: Serialize + DeserializeOwned + Clone + Send + 'static + Debug,
+        P: Serialize + DeserializeOwned + Clone + Send + 'static + Debug,
+        R: Serialize + DeserializeOwned + Clone + Send + 'static + Debug,
     {
         let (tx, rx) = oneshot::channel();
 

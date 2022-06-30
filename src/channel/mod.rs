@@ -57,9 +57,9 @@ pub struct ChannelHandler<T, V, P, R> {
 impl<T, V, P, R> ChannelHandler<T, V, P, R>
 where
     T: Serialize,
-    V: Serialize,
-    P: Serialize,
-    R: Serialize,
+    V: Serialize + DeserializeOwned,
+    P: Serialize + DeserializeOwned,
+    R: Serialize + DeserializeOwned,
 {
     /// Sends a message to the server.
     ///
@@ -69,13 +69,7 @@ where
         &mut self,
         event: Event<V>,
         payload: Payload<P, R>,
-    ) -> Result<Message<T, V, P, R>, Error>
-    where
-        T: Serialize,
-        V: Serialize + DeserializeOwned,
-        P: Serialize + DeserializeOwned,
-        R: Serialize + DeserializeOwned,
-    {
+    ) -> Result<Message<T, V, P, R>, Error> {
         let event = serde_json::to_value(&event)?;
         let payload = serde_json::to_value(&payload)?;
 
@@ -124,13 +118,7 @@ where
     ///
     /// # Errors
     /// [`Timeout`](crate::error::Error::Timeout) is returned if the underlying channel has already been closed by another [`ChannelHandler`],
-    pub async fn close(self) -> Result<Message<T, V, P, R>, Error>
-    where
-        T: Serialize,
-        V: Serialize + DeserializeOwned,
-        P: Serialize + DeserializeOwned,
-        R: Serialize + DeserializeOwned,
-    {
+    pub async fn close(self) -> Result<Message<T, V, P, R>, Error> {
         let (callback, receiver) = WithCallback::new(());
         let (tx, rx) = oneshot::channel();
 
@@ -373,7 +361,7 @@ struct Channel<T, V, P, R> {
 
 impl<T, V, P, R> Channel<T, V, P, R>
 where
-    T: Serialize + DeserializeOwned + Debug,
+    T: Serialize + DeserializeOwned + Debug + Clone,
     V: Serialize + DeserializeOwned + Debug,
     P: Serialize + DeserializeOwned + Debug,
     R: Serialize + DeserializeOwned + Debug,
@@ -478,10 +466,7 @@ where
         &mut self,
         message: WithCallback<()>,
         reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
-    ) -> Result<(), SendError<ChannelSocketMessage<T>>>
-    where
-        T: Clone,
-    {
+    ) -> Result<(), SendError<ChannelSocketMessage<T>>> {
         let message = message.map(|_| Message::leave(self.topic.clone(), self.reference.next()));
         self.outbound_inner(message, reply_callback)
     }
@@ -524,7 +509,7 @@ where
     /// Runs the `Channel` task.
     pub(crate) async fn run(mut self)
     where
-        T: Clone + Send + Sync + 'static + Debug,
+        T: Send + Sync + 'static + Debug,
         V: Send + 'static,
         P: Send + 'static,
         R: Send + 'static,

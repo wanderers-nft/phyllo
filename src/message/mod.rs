@@ -124,7 +124,7 @@ pub enum PushStatus {
     Error,
 }
 
-impl Message<String, (), (), ()> {
+impl Message<String, Value, Value, Value> {
     /// Creates a heartbeat message.
     /// ```
     /// # use serde_json::{json, Value};

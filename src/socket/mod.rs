@@ -359,9 +359,7 @@ where
     #[instrument(skip_all)]
     async fn send_hearbeat(reference: u64, sink: &mut Sink) -> Result<(), tungstenite::Error> {
         let heartbeat_message: tungstenite::Message =
-            Message::<String, (), (), ()>::heartbeat(reference)
-                .try_into()
-                .unwrap();
+            Message::heartbeat(reference).try_into().unwrap();
 
         info!(message = %heartbeat_message);
 

@@ -109,7 +109,7 @@ impl Default for Reference {
 }
 
 /// Callback for a topic subscription message sent from a `SocketHandler` to a `Socket`.
-type HandlerSocketMessageCallback<T> = oneshot::Sender<(
+type HandlerSocketSubscribeCallback<T> = oneshot::Sender<(
     UnboundedReceiver<SocketChannelMessage<T>>,
     UnboundedSender<ChannelSocketMessage<T>>,
 )>;
@@ -121,7 +121,7 @@ enum HandlerSocketMessage<T> {
     /// Create a subscription for the topic.
     Subscribe {
         topic: T,
-        callback: HandlerSocketMessageCallback<T>,
+        callback: HandlerSocketSubscribeCallback<T>,
     },
 }
 

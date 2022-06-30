@@ -24,12 +24,14 @@ use tokio_tungstenite::tungstenite;
 use tracing::{info, instrument, warn};
 
 /// Message sent from a `ChannelHandler` to its `Channel`. These messages will not be consumed by the `Channel` until it has joined and is ready to send messages to the `Socket`.
+#[derive(Debug)]
 struct HandlerChannelMessage<T> {
     message: WithCallback<(Event<Value>, Payload<Value, Value>)>,
     reply_callback: oneshot::Sender<Result<Message<T, Value, Value, Value>, Error>>,
 }
 
 /// A priority message sent from a `ChannelHandler` to its `Channel`. These messages will always be processed regardless of whether the `Channel` has been joined.
+#[derive(Debug)]
 enum HandlerChannelInternalMessage<T, V, P, R> {
     /// Send a leave message, destroying the `Channel`.
     Leave {
@@ -47,7 +49,7 @@ enum HandlerChannelInternalMessage<T, V, P, R> {
 /// # Errors
 /// For functions that return `Result<Message, Error>`, an error is returned if the function fails to send, receive, encode or decode messages.
 /// It is **not** considered a failure for the server to successfully reply with an error.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ChannelHandler<T, V, P, R> {
     handler_tx: UnboundedSender<HandlerChannelMessage<T>>,
     timeout: Duration,
@@ -147,9 +149,8 @@ where
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
 /// The status of a `Channel`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum ChannelStatus {
     /// Underlying websocket was reset, a rejoin will be attempted.
     Rejoin,
@@ -171,7 +172,7 @@ impl ChannelStatus {
 }
 
 /// Message sent from a `Socket` to a `Channel`.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SocketChannelMessage<T> {
     /// A message with the registered topic.
     Message(Message<T, Value, Value, Value>),
@@ -605,12 +606,15 @@ where
     }
 }
 
+/// Message sent from `Rejoin` to `Channel`.
+#[derive(Debug)]
 struct RejoinChannelMessage<T, V, P, R> {
     message: WithCallback<Message<T, V, P, R>>,
     reply_callback: oneshot::Sender<Result<Message<T, V, P, R>, Error>>,
 }
 
-#[derive(Clone, Debug)]
+/// Rejoiner task responsible for sending rejoins for a topic.
+#[derive(Debug, Clone)]
 struct Rejoin<T, V, P> {
     rejoin_after: ExponentialBackoff,
     timeout: Duration,

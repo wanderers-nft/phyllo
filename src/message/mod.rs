@@ -32,7 +32,7 @@ use tracing::warn;
 /// # Warning
 /// `"phoenix"` is a protocol-reserved identifier for messages such as heartbeat.
 /// The server will close your connection if you send an irregular message with a topic that serializes into `"phoenix"`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Message<T, V, P, R> {
     /// Reference of the latest successful join message for the topic.
     pub join_ref: Option<u64>,
@@ -47,7 +47,7 @@ pub struct Message<T, V, P, R> {
 }
 
 /// The payload of a [`Message`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Payload<P, R> {
     /// Reply/acknowledgement of a message sent from the client.
@@ -115,7 +115,7 @@ impl<P, R> Payload<P, R> {
 }
 
 /// Status of a message sent to the server, received as a response.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PushStatus {
     /// Message was ok.
@@ -375,8 +375,8 @@ where
     }
 }
 
-/// The event that a message represents.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The event that a [`Message`] represents.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Event<T> {
     /// Protocol-reserved events.
@@ -421,7 +421,7 @@ impl<T, E> Event<Result<T, E>> {
 }
 
 /// Protocol-reserved events.
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ProtocolEvent {
     /// Heartbeat.
     #[serde(rename = "heartbeat")]

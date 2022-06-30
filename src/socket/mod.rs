@@ -115,6 +115,7 @@ type HandlerSocketSubscribeCallback<T> = oneshot::Sender<(
 )>;
 
 /// A message sent from a `SocketHandler` to a `Socket`.
+#[derive(Debug)]
 enum HandlerSocketMessage<T> {
     /// Close the socket.
     Close,
@@ -130,7 +131,7 @@ type Sink = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tungstenite::M
 type TungsteniteWebSocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// What the socket should do if an IO error is encountered.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OnIoError {
     /// Close the socket connection permanently.
     Die,
@@ -226,6 +227,7 @@ impl SocketBuilder {
 }
 
 /// A socket for managing and receiving/sending Phoenix messages.
+#[derive(Debug)]
 struct Socket<T> {
     /// SocketHandler -> Socket
     handler_rx: UnboundedReceiver<HandlerSocketMessage<T>>,

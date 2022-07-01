@@ -2,13 +2,14 @@ use crate::{
     channel::{
         ChannelBuilder, ChannelHandler, ChannelSocketMessage, ChannelStatus, SocketChannelMessage,
     },
+    error::RegisterChannelError,
     message::Message,
 };
 use backoff::ExponentialBackoff;
 use futures_util::{stream::SplitSink, SinkExt, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     fmt::Debug,
     hash::Hash,
     sync::{
@@ -48,15 +49,22 @@ where
 {
     /// Register a new channel for the socket, returning a corresponding [`ChannelHandler`].
     ///
-    /// # Panics
-    /// Panics if the underlying `Socket` has been dropped, or if the given topic has already been registered.
+    /// To avoid a potential race condition where the join is established and a message is received before [`ChannelHandler::subscribe`](crate::channel::ChannelHandler::subscribe)
+    /// returns [(`broadcast` channels only receives values sent after a `subscribe` call)](tokio::sync::broadcast), a ready-to-use [`broadcast::Receiver`] is included
+    /// in the return.
+    ///
+    /// # Errors
+    /// If the underlying `Socket` has been dropped, or if the given topic has already been registered, an error is returned.
     pub async fn channel<V, P, R>(
         &mut self,
         channel_builder: ChannelBuilder<T>,
-    ) -> (
-        ChannelHandler<T, V, P, R>,
-        broadcast::Receiver<Message<T, V, P, R>>,
-    )
+    ) -> Result<
+        (
+            ChannelHandler<T, V, P, R>,
+            broadcast::Receiver<Message<T, V, P, R>>,
+        ),
+        RegisterChannelError,
+    >
     where
         V: Serialize + DeserializeOwned + Clone + Send + 'static + Debug,
         P: Serialize + DeserializeOwned + Clone + Send + 'static + Debug,
@@ -69,10 +77,18 @@ where
             callback: tx,
         });
 
-        // todo: handle this error
-        let (channel_socket, socket_channel) = rx.await.unwrap();
+        let (channel_socket, socket_channel) = rx
+            .await
+            .map_err(|_| RegisterChannelError::SocketDropped)?
+            .ok_or(RegisterChannelError::DuplicateTopic)?;
 
-        channel_builder.build::<V, P, R>(self.reference.clone(), socket_channel, channel_socket)
+        Ok(
+            channel_builder.build::<V, P, R>(
+                self.reference.clone(),
+                socket_channel,
+                channel_socket,
+            ),
+        )
     }
 
     /// Close the socket, dropping all queued messages. This function will work even if the underlying socket has already been closed by another `SocketHandler`.
@@ -109,10 +125,12 @@ impl Default for Reference {
 }
 
 /// Callback for a topic subscription message sent from a `SocketHandler` to a `Socket`.
-type HandlerSocketSubscribeCallback<T> = oneshot::Sender<(
-    UnboundedReceiver<SocketChannelMessage<T>>,
-    UnboundedSender<ChannelSocketMessage<T>>,
-)>;
+type HandlerSocketSubscribeCallback<T> = oneshot::Sender<
+    Option<(
+        UnboundedReceiver<SocketChannelMessage<T>>,
+        UnboundedSender<ChannelSocketMessage<T>>,
+    )>,
+>;
 
 /// A message sent from a `SocketHandler` to a `Socket`.
 #[derive(Debug)]
@@ -198,7 +216,7 @@ impl SocketBuilder {
     /// Spawns the `Socket` and returns a corresponding `SocketHandler`.
     pub async fn build<T>(&self) -> SocketHandler<T>
     where
-        T: Serialize + DeserializeOwned + Eq + Hash + Send + Sync + 'static + Debug,
+        T: Serialize + DeserializeOwned + Eq + Clone + Hash + Send + Sync + 'static + Debug,
     {
         // Send, receiver for client -> server
         let (out_tx, out_rx) = unbounded_channel();
@@ -257,7 +275,7 @@ struct Socket<T> {
 
 impl<T> Socket<T>
 where
-    T: Serialize + DeserializeOwned + Eq + Hash + Send + 'static + Debug,
+    T: Serialize + DeserializeOwned + Clone + Eq + Hash + Send + 'static + Debug,
 {
     /// Connect to the websocket with exponential backoff.
     #[instrument(skip(self), fields(endpoint = %self.endpoint))]
@@ -305,14 +323,16 @@ where
                             },
                             HandlerSocketMessage::Subscribe { topic, callback } => {
                                 let (in_tx, in_rx) = unbounded_channel();
-
-                                if self.subscriptions.contains_key(&topic) {
-                                    panic!("channel already exists");
-                                }
-                                self.subscriptions.insert(topic, in_tx);
-
-                                let _ = callback.send((in_rx, self.out_tx.clone()));
-
+                                let callback_value = match self.subscriptions.entry(topic.clone()) {
+                                    Entry::Occupied(_) => {
+                                        None
+                                    },
+                                    Entry::Vacant(e) => {
+                                        e.insert(in_tx);
+                                        Some((in_rx, self.out_tx.clone()))
+                                    },
+                                };
+                                let _ = callback.send(callback_value);
                             },
                         }
                         Ok(())

@@ -21,6 +21,17 @@ pub enum Error {
     SocketDropped,
 }
 
+/// Errors that can be encountered during [channel registration](crate::socket::SocketHandler::channel).
+#[derive(Debug, Error)]
+pub enum RegisterChannelError {
+    /// The socket responsible has been dropped.
+    #[error("underlying socket dropped")]
+    SocketDropped,
+    /// The topic has already been registered.
+    #[error("topic has already been registered")]
+    DuplicateTopic,
+}
+
 /// Errors that can be encountered while joining a channel.
 /// This error variant is used to catch successful replies with an errored payload, which is **not** considered an error in regular usage.
 #[derive(Debug, Error)]

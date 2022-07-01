@@ -22,7 +22,7 @@
 //!     // to something strongly-typed.
 //!     let (_channel, mut subscription) = socket
 //!         .channel::<String, Value, Value>(ChannelBuilder::new("firehose".to_string()))
-//!         .await;
+//!         .await?;
 //!
 //!     loop {
 //!         let v = subscription.recv().await?;

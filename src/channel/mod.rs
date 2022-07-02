@@ -1,5 +1,5 @@
 use crate::{
-    error::{ChannelJoinError, Error},
+    error::{ChannelJoinError, ChannelSubscribeError, Error},
     message::{run_message, Event, Message, Payload, ProtocolEvent, PushStatus, WithCallback},
     socket::Reference,
 };
@@ -63,10 +63,7 @@ where
     P: Serialize + DeserializeOwned,
     R: Serialize + DeserializeOwned,
 {
-    /// Sends a message to the server.
-    ///
-    /// # Panics
-    /// Panics if the underlying `Channel` has been dropped.
+    /// Sends a message to the server. The response from the server is returned.
     pub async fn send(
         &mut self,
         event: Event<V>,
@@ -78,10 +75,13 @@ where
         let (event_payload, receiver) =
             WithCallback::new((Event::Event(event), Payload::Custom(payload)));
         let (tx, rx) = oneshot::channel();
-        let _ = self.handler_tx.send(HandlerChannelMessage {
-            message: event_payload,
-            reply_callback: tx,
-        });
+        let _ = self
+            .handler_tx
+            .send(HandlerChannelMessage {
+                message: event_payload,
+                reply_callback: tx,
+            })
+            .map_err(|_| Error::ChannelDropped)?;
 
         let res = run_message(receiver, rx, self.timeout).await?;
 
@@ -101,25 +101,20 @@ where
     }
 
     /// Gets a receiver subscribed to non-reply channel messages.
-    ///
-    /// # Panics
-    /// Panics if the underlying `Channel` has been dropped.
-    pub async fn subscribe(&mut self) -> broadcast::Receiver<Message<T, V, P, R>> {
+    pub async fn subscribe(
+        &mut self,
+    ) -> Result<broadcast::Receiver<Message<T, V, P, R>>, ChannelSubscribeError> {
         let (tx, rx) = oneshot::channel();
 
-        // todo: handle this error
         let _ = self
             .handler_internal_tx
-            .send(HandlerChannelInternalMessage::Broadcast { callback: tx });
+            .send(HandlerChannelInternalMessage::Broadcast { callback: tx })
+            .map_err(|_| ChannelSubscribeError::ChannelDropped)?;
 
-        // todo: handle this error
-        rx.await.unwrap()
+        rx.await.map_err(|_| ChannelSubscribeError::ChannelDropped)
     }
 
-    /// Close the channel, dropping the corresponding `Channel`.
-    ///
-    /// # Errors
-    /// [`Timeout`](crate::error::Error::Timeout) is returned if the underlying channel has already been closed by another [`ChannelHandler`],
+    /// Closes the channel, dropping the corresponding `Channel`. The response from the server is returned.
     pub async fn close(self) -> Result<Message<T, V, P, R>, Error> {
         let (callback, receiver) = WithCallback::new(());
         let (tx, rx) = oneshot::channel();
@@ -129,7 +124,8 @@ where
             .send(HandlerChannelInternalMessage::Leave {
                 callback,
                 reply_callback: tx,
-            });
+            })
+            .map_err(|_| Error::ChannelDropped)?;
 
         let res = run_message(receiver, rx, self.timeout).await?;
 

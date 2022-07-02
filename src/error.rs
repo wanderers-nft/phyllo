@@ -16,13 +16,16 @@ pub enum Error {
     /// Message reply timed out.
     #[error("message reply timeout")]
     Timeout,
+    /// The channel responsible for this message has been dropped.
+    #[error("underlying channel dropped")]
+    ChannelDropped,
     /// The socket responsible for this message has been dropped.
     #[error("underlying socket dropped")]
     SocketDropped,
 }
 
 /// Errors that can be encountered during [channel registration](crate::socket::SocketHandler::channel).
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq, Hash)]
 pub enum RegisterChannelError {
     /// The socket responsible has been dropped.
     #[error("underlying socket dropped")]
@@ -30,6 +33,14 @@ pub enum RegisterChannelError {
     /// The topic has already been registered.
     #[error("topic has already been registered")]
     DuplicateTopic,
+}
+
+/// Errors that can be encountered during [channel subscription](crate::channel::ChannelHandler::subscribe)
+#[derive(Debug, Error, PartialEq, Eq, Hash)]
+pub enum ChannelSubscribeError {
+    /// The channel responsible for this subscription has been dropped.
+    #[error("underlying channel dropped")]
+    ChannelDropped,
 }
 
 /// Errors that can be encountered while joining a channel.

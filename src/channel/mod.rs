@@ -75,8 +75,7 @@ where
         let (event_payload, receiver) =
             WithCallback::new((Event::Event(event), Payload::Custom(payload)));
         let (tx, rx) = oneshot::channel();
-        let _ = self
-            .handler_tx
+        self.handler_tx
             .send(HandlerChannelMessage {
                 message: event_payload,
                 reply_callback: tx,
@@ -106,8 +105,7 @@ where
     ) -> Result<broadcast::Receiver<Message<T, V, P, R>>, ChannelSubscribeError> {
         let (tx, rx) = oneshot::channel();
 
-        let _ = self
-            .handler_internal_tx
+        self.handler_internal_tx
             .send(HandlerChannelInternalMessage::Broadcast { callback: tx })
             .map_err(|_| ChannelSubscribeError::ChannelDropped)?;
 
@@ -119,8 +117,7 @@ where
         let (callback, receiver) = WithCallback::new(());
         let (tx, rx) = oneshot::channel();
 
-        let _ = self
-            .handler_internal_tx
+        self.handler_internal_tx
             .send(HandlerChannelInternalMessage::Leave {
                 callback,
                 reply_callback: tx,

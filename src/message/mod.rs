@@ -206,6 +206,32 @@ where
             payload.map(|r| Payload::Custom(r)),
         )
     }
+
+    /// Extracts a potential [`Custom`](crate::message::Payload::Custom) payload from a message.
+    /// Useful for inbound messages where you don't care about the raw message from the protcol.
+    ///
+    /// # Example
+    /// ```
+    /// # use serde_json::{json, Value};
+    /// # use phyllo::message::{Message, Event, Payload};
+    /// type MessageType = Message<Value, Value, Value, Value>;
+    /// const INCOMING: &str = r#"[0,0,"topic","event",{"friend":"Firefly"}]"#;
+    ///
+    /// // Assume this is an incoming message from the server.
+    /// let message: MessageType = serde_json::from_str(INCOMING)?;
+    ///
+    /// assert_eq!(
+    ///     Some(json!({"friend": "Firefly"})),
+    ///     message.into_custom_payload()
+    /// );
+    /// # Ok::<(), serde_json::Error>(())
+    /// ```
+    pub fn into_custom_payload(self) -> Option<R> {
+        match self.payload {
+            Some(Payload::Custom(c)) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 impl<T, V, P, R> TryFrom<Message<T, V, P, R>> for tungstenite::Message

@@ -33,7 +33,8 @@ use tracing::warn;
 ///
 /// # Warning
 /// `"phoenix"` is a protocol-reserved identifier for messages such as heartbeat.
-/// The server will close your connection if you send an irregular message with a topic that serializes into `"phoenix"`.
+/// It is considered a protocol error to send an irregular message with a topic that serializes into `"phoenix"`.
+/// This is **not** checked by the library!
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Message<T, V, P, R> {
     /// Reference of the latest successful join message for the topic.

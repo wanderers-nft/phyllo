@@ -8,8 +8,9 @@
 //! Warning: the results returned may include NSFW links or comments.
 //! ```no_run
 //! # use phyllo::{channel::ChannelBuilder, socket::SocketBuilder};
-//! # use serde_json::Value;
+//! use serde_json::Value;
 //! # use url::Url;
+//! 
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     // The socket is generic over a Topic.

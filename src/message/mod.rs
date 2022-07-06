@@ -10,8 +10,10 @@ use tracing::warn;
 ///
 /// Messages are serialized into an array, omitting the keys, instead of a regular JSON object.
 /// ```
-/// # use serde_json::{json, Value};
+/// # use serde_json::json;
+/// use serde_json::Value;
 /// # use phyllo::message::{Message, Event, Payload};
+/// 
 /// type MessageType = Message<Value, Value, Value, Value>;
 ///
 /// let message: MessageType = Message::new(

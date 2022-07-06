@@ -52,7 +52,7 @@ where
     /// To avoid a potential race condition where the join is established and a message is received before [`ChannelHandler::subscribe`](crate::channel::ChannelHandler::subscribe)
     /// returns [(`broadcast` channels only receives values sent after a `subscribe` call)](tokio::sync::broadcast), a ready-to-use [`broadcast::Receiver`] is included
     /// in the return.
-    /// 
+    ///
     /// # Warnings
     /// [The topic `"phoenix"` is a protocol-reserved keyword.](crate::message::Message#warning)
     ///

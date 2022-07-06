@@ -13,7 +13,7 @@ use tracing::warn;
 /// # use serde_json::json;
 /// use serde_json::Value;
 /// # use phyllo::message::{Message, Event, Payload};
-/// 
+///
 /// type MessageType = Message<Value, Value, Value, Value>;
 ///
 /// let message: MessageType = Message::new(

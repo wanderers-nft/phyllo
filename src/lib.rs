@@ -19,7 +19,7 @@
 //!         .await;
 //!
 //!     // Each channel is generic over an Event and Payload type.
-//!     // For simplicity we use serde_json::Value,but in your own code you should deserialize
+//!     // For simplicity we use serde_json::Value, but in your own code you should deserialize
 //!     // to something strongly-typed.
 //!     let (_channel, mut subscription) = socket
 //!         .channel::<String, Value, Value>(ChannelBuilder::new("firehose".to_string()))

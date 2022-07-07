@@ -30,4 +30,12 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+## Features
+TLS is not enabled by default. Enable either of the following for TLS support:
+
+- `rustls-native-roots` (uses [`rustls-native-certs`](https://crates.io/crates/rustls-native-certs)
+for root certificates)
+- `rustls-webpki-roots` (uses [`webpki-roots`](https://crates.io/crates/webpki-roots) for root
+certificates)
+
 License: MIT OR Apache-2.0

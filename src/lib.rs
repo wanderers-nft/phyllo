@@ -35,9 +35,9 @@
 //! # Features
 //! TLS is not enabled by default. Enable either of the following for TLS support:
 //!
-//! - `rustls-native-roots` (uses [`rustls-native-certs`](https://crates.io/crates/rustls-native-certs)
+//! - `rustls-tls-native-roots` (uses [`rustls-native-certs`](https://crates.io/crates/rustls-native-certs)
 //! for root certificates)
-//! - `rustls-webpki-roots` (uses [`webpki-roots`](https://crates.io/crates/webpki-roots) for root
+//! - `rustls-tls-webpki-roots` (uses [`webpki-roots`](https://crates.io/crates/webpki-roots) for root
 //! certificates)
 
 /// Channels for sending/receiving messages related to a topic.

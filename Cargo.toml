@@ -1,5 +1,10 @@
 [package]
 name = "phyllo"
+description = "Websocket-based client for Phoenix channels"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wanderers-nft/phyllo"
+categories = ["web-programming::websocket"]
+keywords = ["phoenix", "channels", "websocket"]
 version = "0.1.0"
 edition = "2021"
 

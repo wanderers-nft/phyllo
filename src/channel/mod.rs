@@ -210,25 +210,25 @@ where
     }
 
     /// Sets the topic used for messages sent/recieved through this channel.
-    pub fn topic(&mut self, topic: T) -> &mut Self {
+    pub fn topic(mut self, topic: T) -> Self {
         self.topic = topic;
         self
     }
 
     /// Sets the timeout duration for messages sent/received through this channel (excluding rejoin messages).
-    pub fn timeout(&mut self, timeout: Duration) -> &mut Self {
+    pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Sets the timeout duration for rejoin messages sent by this channel.
-    pub fn rejoin_timeout(&mut self, rejoin_timeout: Duration) -> &mut Self {
+    pub fn rejoin_timeout(mut self, rejoin_timeout: Duration) -> Self {
         self.rejoin_timeout = rejoin_timeout;
         self
     }
 
     /// Sets the strategy for attempting rejoining using exponential backoff.
-    pub fn rejoin(&mut self, rejoin_after: ExponentialBackoff) -> &mut Self {
+    pub fn rejoin(mut self, rejoin_after: ExponentialBackoff) -> Self {
         self.rejoin = rejoin_after;
         self
     }
@@ -236,17 +236,18 @@ where
     /// Sets the param to be sent during joining.
     /// # Panics
     /// Panics if `params` fails to serialize.
-    pub fn params<U>(&mut self, params: Option<U>) -> &mut Self
+    pub fn params<U>(mut self, params: Option<U>) -> Self
     where
         U: Serialize,
     {
-        self.try_params(params)
+        self = self
+            .try_params(params)
             .expect("could not serialize parameter");
         self
     }
 
     /// Sets the param to be sent during joining.
-    pub fn try_params<U>(&mut self, params: Option<U>) -> Result<&mut Self, serde_json::Error>
+    pub fn try_params<U>(mut self, params: Option<U>) -> Result<Self, serde_json::Error>
     where
         U: Serialize,
     {
@@ -255,7 +256,7 @@ where
     }
 
     /// Sets the buffer size of the broadcast channel. See [`tokio::sync::broadcast`].
-    pub fn broadcast_buffer(&mut self, broadcast_buffer: usize) -> &mut Self {
+    pub fn broadcast_buffer(mut self, broadcast_buffer: usize) -> Self {
         self.broadcast_buffer = broadcast_buffer;
         self
     }
@@ -264,7 +265,7 @@ where
     // Allow type complexity here (for some reason it doesn't complain about SocketHandler::channel!)
     #[allow(clippy::type_complexity)]
     pub(crate) fn build<V, P, R>(
-        &self,
+        self,
         reference: Reference,
         out_tx: UnboundedSender<ChannelSocketMessage<T>>,
         in_rx: UnboundedReceiver<SocketChannelMessage<T>>,

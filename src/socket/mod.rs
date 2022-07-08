@@ -185,7 +185,7 @@ impl SocketBuilder {
     }
 
     /// Sets the endpoint to connect to. Only `vsn=2.0.0` is supported.
-    pub fn endpoint(&mut self, mut endpoint: Url) -> &mut Self {
+    pub fn endpoint(mut self, mut endpoint: Url) -> Self {
         endpoint.query_pairs_mut().append_pair("vsn", "2.0.0");
 
         self.endpoint = endpoint;
@@ -193,31 +193,31 @@ impl SocketBuilder {
     }
 
     /// Sets the configuration for the underlying `tungstenite` websocket.
-    pub fn websocket_config(&mut self, websocket_config: Option<WebSocketConfig>) -> &mut Self {
+    pub fn websocket_config(mut self, websocket_config: Option<WebSocketConfig>) -> Self {
         self.websocket_config = websocket_config;
         self
     }
 
     /// Sets the interval between heartbeat messages.
-    pub fn heartbeat(&mut self, heartbeat: Duration) -> &mut Self {
+    pub fn heartbeat(mut self, heartbeat: Duration) -> Self {
         self.heartbeat = heartbeat;
         self
     }
 
     /// Sets the strategy for attempting reconnection using exponential backoff.
-    pub fn reconnect(&mut self, reconnect: ExponentialBackoff) -> &mut Self {
+    pub fn reconnect(mut self, reconnect: ExponentialBackoff) -> Self {
         self.reconnect = reconnect;
         self
     }
 
     /// Sets how to handle an IO error.
-    pub fn on_io_error(&mut self, on_io_error: OnIoError) -> &mut Self {
+    pub fn on_io_error(mut self, on_io_error: OnIoError) -> Self {
         self.on_io_error = on_io_error;
         self
     }
 
     /// Spawns the `Socket` and returns a corresponding `SocketHandler`.
-    pub async fn build<T>(&self) -> SocketHandler<T>
+    pub async fn build<T>(self) -> SocketHandler<T>
     where
         T: Serialize + DeserializeOwned + Eq + Clone + Hash + Send + Sync + 'static + Debug,
     {

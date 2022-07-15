@@ -72,6 +72,25 @@ where
         event: Event<V>,
         payload: Payload<P, R>,
     ) -> Result<Message<T, V, P, R>, Error> {
+        self.send_inner(event, payload, Some(self.timeout)).await
+    }
+
+    /// Sends a message to the server. The response from the server is returned.
+    /// This function will not time out waiting for a response.
+    pub async fn send_no_timeout(
+        &mut self,
+        event: Event<V>,
+        payload: Payload<P, R>,
+    ) -> Result<Message<T, V, P, R>, Error> {
+        self.send_inner(event, payload, None).await
+    }
+
+    async fn send_inner(
+        &mut self,
+        event: Event<V>,
+        payload: Payload<P, R>,
+        timeout: Option<Duration>,
+    ) -> Result<Message<T, V, P, R>, Error> {
         let event = serde_json::to_value(&event)?;
         let payload = serde_json::to_value(&payload)?;
 
@@ -85,7 +104,10 @@ where
             })
             .map_err(|_| Error::ChannelDropped)?;
 
-        let res = run_message_with_timeout(receiver, rx, self.timeout).await?;
+        let res = match timeout {
+            Some(t) => run_message_with_timeout(receiver, rx, t).await,
+            None => run_message(receiver, rx).await,
+        }?;
 
         Ok(Message {
             join_ref: res.join_ref,

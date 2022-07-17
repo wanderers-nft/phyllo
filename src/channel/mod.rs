@@ -139,6 +139,17 @@ where
 
     /// Closes the channel, dropping the corresponding `Channel`. The response from the server is returned.
     pub async fn close(self) -> Result<Message<T, V, P, R>, Error> {
+        let timeout = self.timeout;
+        self.close_inner(Some(timeout)).await
+    }
+
+    /// Closes the channel, dropping the corresponding `Channel`. The response from the server is returned.
+    /// This function will not time out waiting for a response.
+    pub async fn close_no_timeout(self) -> Result<Message<T, V, P, R>, Error> {
+        self.close_inner(None).await
+    }
+
+    async fn close_inner(self, timeout: Option<Duration>) -> Result<Message<T, V, P, R>, Error> {
         let (callback, receiver) = WithCallback::new(());
         let (tx, rx) = oneshot::channel();
 
@@ -149,7 +160,10 @@ where
             })
             .map_err(|_| Error::ChannelDropped)?;
 
-        let res = run_message_with_timeout(receiver, rx, self.timeout).await?;
+        let res = match timeout {
+            Some(t) => run_message_with_timeout(receiver, rx, t).await,
+            None => run_message(receiver, rx).await,
+        }?;
 
         Ok(Message {
             join_ref: res.join_ref,

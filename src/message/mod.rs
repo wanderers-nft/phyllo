@@ -357,7 +357,7 @@ impl<T> WithCallback<T> {
 }
 
 /// Handles the sending of a message and receiving its reply, with a timeout.
-pub(crate) async fn run_message<T, V, P, R>(
+pub(crate) async fn run_message_with_timeout<T, V, P, R>(
     send_callback: oneshot::Receiver<Result<(), tungstenite::Error>>,
     mut receive_callback: oneshot::Receiver<Result<Message<T, V, P, R>, Error>>,
     timeout: Duration,
@@ -395,6 +395,41 @@ where
             Err(Error::Timeout)
         }
 
+        v = receive_callback => {
+            match v {
+                Err(_) => Err(Error::SocketDropped),
+                Ok(v) => v,
+            }
+        }
+    }
+}
+
+/// Handles the sending of a message and receiving its reply, without a timeout.
+pub(crate) async fn run_message<T, V, P, R>(
+    send_callback: oneshot::Receiver<Result<(), tungstenite::Error>>,
+    mut receive_callback: oneshot::Receiver<Result<Message<T, V, P, R>, Error>>,
+) -> Result<Message<T, V, P, R>, Error>
+where
+    T: Serialize,
+    V: Serialize,
+    P: Serialize,
+    R: Serialize,
+{
+    // Await the send callback
+    select! {
+        Err(_) = &mut receive_callback => Err(Error::SocketDropped),
+
+        v = send_callback => {
+            match v {
+                Err(_) => Err(Error::SocketDropped),
+                Ok(Err(e)) => Err(Error::WebSocket(e)),
+                _ => Ok(())
+            }
+        }
+    }?;
+
+    // Await the receive callback
+    select! {
         v = receive_callback => {
             match v {
                 Err(_) => Err(Error::SocketDropped),

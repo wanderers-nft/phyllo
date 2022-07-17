@@ -1,6 +1,9 @@
 use crate::{
     error::{ChannelJoinError, ChannelSubscribeError, Error},
-    message::{run_message, Event, Message, Payload, ProtocolEvent, PushStatus, WithCallback},
+    message::{
+        run_message, run_message_with_timeout, Event, Message, Payload, ProtocolEvent, PushStatus,
+        WithCallback,
+    },
     socket::Reference,
 };
 use backoff::ExponentialBackoff;
@@ -69,6 +72,25 @@ where
         event: Event<V>,
         payload: Payload<P, R>,
     ) -> Result<Message<T, V, P, R>, Error> {
+        self.send_inner(event, payload, Some(self.timeout)).await
+    }
+
+    /// Sends a message to the server. The response from the server is returned.
+    /// This function will not time out waiting for a response.
+    pub async fn send_no_timeout(
+        &mut self,
+        event: Event<V>,
+        payload: Payload<P, R>,
+    ) -> Result<Message<T, V, P, R>, Error> {
+        self.send_inner(event, payload, None).await
+    }
+
+    async fn send_inner(
+        &mut self,
+        event: Event<V>,
+        payload: Payload<P, R>,
+        timeout: Option<Duration>,
+    ) -> Result<Message<T, V, P, R>, Error> {
         let event = serde_json::to_value(&event)?;
         let payload = serde_json::to_value(&payload)?;
 
@@ -82,7 +104,10 @@ where
             })
             .map_err(|_| Error::ChannelDropped)?;
 
-        let res = run_message(receiver, rx, self.timeout).await?;
+        let res = match timeout {
+            Some(t) => run_message_with_timeout(receiver, rx, t).await,
+            None => run_message(receiver, rx).await,
+        }?;
 
         Ok(Message {
             join_ref: res.join_ref,
@@ -114,6 +139,17 @@ where
 
     /// Closes the channel, dropping the corresponding `Channel`. The response from the server is returned.
     pub async fn close(self) -> Result<Message<T, V, P, R>, Error> {
+        let timeout = self.timeout;
+        self.close_inner(Some(timeout)).await
+    }
+
+    /// Closes the channel, dropping the corresponding `Channel`. The response from the server is returned.
+    /// This function will not time out waiting for a response.
+    pub async fn close_no_timeout(self) -> Result<Message<T, V, P, R>, Error> {
+        self.close_inner(None).await
+    }
+
+    async fn close_inner(self, timeout: Option<Duration>) -> Result<Message<T, V, P, R>, Error> {
         let (callback, receiver) = WithCallback::new(());
         let (tx, rx) = oneshot::channel();
 
@@ -124,7 +160,10 @@ where
             })
             .map_err(|_| Error::ChannelDropped)?;
 
-        let res = run_message(receiver, rx, self.timeout).await?;
+        let res = match timeout {
+            Some(t) => run_message_with_timeout(receiver, rx, t).await,
+            None => run_message(receiver, rx).await,
+        }?;
 
         Ok(Message {
             join_ref: res.join_ref,
@@ -215,12 +254,15 @@ where
         self
     }
 
-    /// Sets the timeout duration for messages sent/received through this channel (excluding rejoin messages).
+    /// Sets the timeout duration for messages sent/received through this channel.
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
+    #[deprecated(
+        note = "Rejoin messages now wait indefinitely instead of timing out. This value does nothing"
+    )]
     /// Sets the timeout duration for rejoin messages sent by this channel.
     pub fn rejoin_timeout(mut self, rejoin_timeout: Duration) -> Self {
         self.rejoin_timeout = rejoin_timeout;
@@ -289,7 +331,6 @@ where
         let channel: Channel<T, V, P, R> = Channel {
             status: ChannelStatus::Rejoin,
             topic: self.topic.clone(),
-            rejoin_timeout: self.rejoin_timeout,
             rejoin_after: self.rejoin.clone(),
             params: self.params.clone(),
             replies: HashMap::new(),
@@ -328,7 +369,6 @@ struct Channel<T, V, P, R> {
     status: ChannelStatus,
 
     topic: T,
-    rejoin_timeout: Duration,
     rejoin_after: ExponentialBackoff,
     params: Option<serde_json::Value>,
 
@@ -521,7 +561,6 @@ where
                     self.rejoin_inflight = true;
                     let rejoiner = Rejoin {
                         rejoin_after: self.rejoin_after.clone(),
-                        timeout: self.rejoin_timeout,
                         reference: self.reference.clone(),
                         topic: self.topic.clone(),
                         params: self.params.clone(),
@@ -617,7 +656,6 @@ struct RejoinChannelMessage<T, V, P, R> {
 #[derive(Debug, Clone)]
 struct Rejoin<T, V, P> {
     rejoin_after: ExponentialBackoff,
-    timeout: Duration,
     reference: Reference,
     topic: T,
     params: Option<serde_json::Value>,
@@ -652,7 +690,7 @@ where
                 backoff::Error::Permanent(ChannelJoinError::Error(Error::SocketDropped))
             })?;
 
-        let res = run_message::<T, V, P, serde_json::Value>(rx, res_rx, self.timeout)
+        let res = run_message::<T, V, P, serde_json::Value>(rx, res_rx)
             .await
             .map_err(|e| match e {
                 // Never re-attempt a dropped socket

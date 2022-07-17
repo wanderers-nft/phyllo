@@ -98,6 +98,11 @@ where
     pub fn close(self) {
         let _ = self.handler_tx.send(HandlerSocketMessage::Close);
     }
+
+    /// Returns whether the `Socket` half is still alive.
+    pub async fn alive(&self) -> bool {
+        !self.handler_tx.is_closed()
+    }
 }
 
 /// A monotonically-increasing counter for tracking messages.

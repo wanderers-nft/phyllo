@@ -179,6 +179,11 @@ where
                 .transpose()?,
         })
     }
+
+    /// Returns whether the `Channel` half is still alive.
+    pub async fn alive(&self) -> bool {
+        !self.handler_tx.is_closed()
+    }
 }
 
 /// The status of a `Channel`.
